@@ -1,0 +1,6 @@
+/target
+/test-wav
+/graphify-out
+boslook.toml
+*.db
+*.pem

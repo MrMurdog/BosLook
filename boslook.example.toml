@@ -1,0 +1,45 @@
+# BosLook – Beispielkonfiguration. Kopieren nach boslook.toml und anpassen.
+
+# SQLite-Datenbank für empfangene Telegramme
+database = "boslook.db"
+
+[web]
+listen = "0.0.0.0:8443"
+# "off" = HTTP, "self-signed" = Zertifikat wird beim ersten Start erstellt,
+# "files" = eigenes Zertifikat (z. B. von Let's Encrypt) aus cert/key laden
+tls = "self-signed"
+cert = "boslook-cert.pem"
+key = "boslook-key.pem"
+
+# Benutzer für die Weboberfläche. Hash erzeugen mit: boslook hash-password
+[[user]]
+name = "admin"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
+
+# Eingänge. Dekoder: pocsag512, pocsag1200, fms, zvei (Standard: alle)
+[[input]]
+name = "Testaufnahme"
+type = "wav"
+path = "test-wav/Leipsch_viel_cutted.wav"
+
+# Live-Audio von stdin (signed 16 Bit, mono), z. B.:
+#   rtl_fm -f 173.255M -M fm -s 22050 - | boslook serve
+#   arecord -f S16_LE -r 22050 -c 1 | boslook serve
+[[input]]
+name = "SDR"
+type = "stdin"
+sample_rate = 22050
+decoders = ["pocsag512", "pocsag1200"]
+
+# Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
+# Gibt es Filter ohne "exclude", muss mindestens einer passen.
+# Felder: kind (pocsag/fms/zvei), address, sub, message
+[[filter]]
+name = "Eigene Schleifen"
+kind = "pocsag"
+address = "^18599"
+
+[[filter]]
+name = "Probealarme ausblenden"
+message = "(?i)probealarm"
+exclude = true
