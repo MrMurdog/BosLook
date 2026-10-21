@@ -21,8 +21,8 @@ pub trait Decoder: Send {
 pub struct Bank(Vec<Box<dyn Decoder>>);
 
 impl Bank {
-    pub fn new(names: &[String], sample_rate: u32) -> Result<Bank> {
-        Ok(Bank(names.iter().map(|n| create(n, sample_rate)).collect::<Result<_>>()?))
+    pub fn new(names: &[String], sample_rate: u32, format: pocsag::Format) -> Result<Bank> {
+        Ok(Bank(names.iter().map(|n| create(n, sample_rate, format)).collect::<Result<_>>()?))
     }
 
     pub fn process(&mut self, samples: &[f32]) -> Vec<Decoded> {
@@ -42,10 +42,10 @@ impl Bank {
     }
 }
 
-pub fn create(name: &str, sample_rate: u32) -> Result<Box<dyn Decoder>> {
+pub fn create(name: &str, sample_rate: u32, format: pocsag::Format) -> Result<Box<dyn Decoder>> {
     Ok(match name {
-        "pocsag512" => Box::new(pocsag::Pocsag::new(512, sample_rate)),
-        "pocsag1200" => Box::new(pocsag::Pocsag::new(1200, sample_rate)),
+        "pocsag512" => Box::new(pocsag::Pocsag::new(512, sample_rate, format)),
+        "pocsag1200" => Box::new(pocsag::Pocsag::new(1200, sample_rate, format)),
         "fms" => Box::new(fms::Fms::new(sample_rate)),
         "zvei" => Box::new(zvei::Zvei::new(sample_rate)),
         _ => bail!("Unbekannter Dekoder '{name}' (verfügbar: {})", ALL.join(", ")),

@@ -24,18 +24,21 @@
   #status.off::before { content: "●"; color: var(--accent); margin-right: 4px; }
   button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  main { padding: 16px; }
-  .table { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+  main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .panel h2 { margin: 0; padding: 10px 12px; font-size: 15px; border-bottom: 1px solid var(--line); }
+  .table { max-height: 70vh; overflow: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  #empty { color: var(--muted); }
   td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.addr { font-family: ui-monospace, monospace; white-space: nowrap; }
   td.msg { word-break: break-word; min-width: 16em; }
   .kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; color: #fff; }
   .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); }
   tr.new { background: var(--new); transition: background 3s; }
-  #more { margin: 12px auto; display: block; }
+  .more { margin: 12px auto; display: block; }
   #login { max-width: 320px; margin: 15vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; }
   #login h1 { margin: 0 0 16px; font-size: 22px; } #login h1 span { color: var(--accent); }
   #login label { display: block; margin: 10px 0 4px; color: var(--muted); }
@@ -43,7 +46,6 @@
   #login button { width: 100%; margin-top: 16px; }
   #error { color: var(--accent); min-height: 1.4em; margin-top: 8px; }
   [hidden] { display: none !important; }
-  @media (max-width: 640px) { .hide-sm { display: none; } }
 </style>
 </head>
 <body>
@@ -61,26 +63,33 @@
     <span id="status" class="off">getrennt</span>
     <button id="logout">Abmelden</button>
   </header>
-  <main>
+  <main id="panels"><p id="empty">Noch keine Quellen vorhanden.</p></main>
+</div>
+
+<template id="panel">
+  <section class="panel">
+    <h2></h2>
     <div class="table">
       <table>
-        <thead><tr><th>Zeit</th><th class="hide-sm">Quelle</th><th>Art</th><th>Adresse</th><th>Sub</th><th>Meldung</th></tr></thead>
-        <tbody id="rows"></tbody>
+        <thead><tr><th>Zeit</th><th>Art</th><th>Adresse</th><th>Sub</th><th>Meldung</th></tr></thead>
+        <tbody></tbody>
       </table>
+      <button class="more">Ältere laden</button>
     </div>
-    <button id="more">Ältere laden</button>
-  </main>
-</div>
+  </section>
+</template>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let oldest = null, socket = null;
+let socket = null;
+// Quelle -> { rows, more, oldest }
+let panels = new Map();
 
 function row(t, isNew) {
   const tr = document.createElement("tr");
   if (isNew) { tr.className = "new"; setTimeout(() => tr.classList.remove("new"), 50); }
   const time = new Date(t.time).toLocaleString("de-DE");
-  const cells = [[time, "time"], [t.source, "hide-sm"], [null, ""], [t.address, "addr"], [t.sub, "addr"], [t.message, "msg"]];
+  const cells = [[time, "time"], [null, ""], [t.address, "addr"], [t.sub, "addr"], [t.message, "msg"]];
   for (const [text, cls] of cells) {
     const td = document.createElement("td");
     td.className = cls;
@@ -95,20 +104,38 @@ function row(t, isNew) {
   return tr;
 }
 
-async function loadOlder() {
-  const res = await fetch("/api/telegrams?limit=100" + (oldest ? "&before=" + oldest : ""));
+function panel(source) {
+  if (panels.has(source)) return panels.get(source);
+  const el = $("panel").content.firstElementChild.cloneNode(true);
+  el.querySelector("h2").textContent = source;
+  const p = { rows: el.querySelector("tbody"), more: el.querySelector(".more"), oldest: null };
+  p.more.onclick = () => loadOlder(source);
+  panels.set(source, p);
+  $("empty").hidden = true;
+  $("panels").append(el);
+  return p;
+}
+
+async function loadOlder(source) {
+  const p = panel(source);
+  const query = new URLSearchParams({ source, limit: 100 });
+  if (p.oldest) query.set("before", p.oldest);
+  const res = await fetch("/api/telegrams?" + query);
   if (res.status === 401) return showLogin();
   const list = await res.json();
-  for (const t of list) $("rows").append(row(t, false));
-  if (list.length) oldest = list[list.length - 1].id;
-  $("more").hidden = list.length < 100;
+  for (const t of list) p.rows.append(row(t, false));
+  if (list.length) p.oldest = list[list.length - 1].id;
+  p.more.hidden = list.length < 100;
 }
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(proto + "//" + location.host + "/api/live");
   socket.onopen = () => { $("status").className = "on"; $("status").textContent = "live"; };
-  socket.onmessage = (e) => $("rows").prepend(row(JSON.parse(e.data), true));
+  socket.onmessage = (e) => {
+    const t = JSON.parse(e.data);
+    panel(t.source).rows.prepend(row(t, true));
+  };
   socket.onclose = () => {
     $("status").className = "off"; $("status").textContent = "getrennt";
     if (!$("app").hidden) setTimeout(connect, 3000);
@@ -122,8 +149,13 @@ function showLogin() {
 
 async function showApp() {
   $("login").hidden = true; $("app").hidden = false;
-  $("rows").innerHTML = ""; oldest = null;
-  await loadOlder();
+  for (const el of $("panels").querySelectorAll(".panel")) el.remove();
+  panels.clear(); $("empty").hidden = false;
+  const res = await fetch("/api/sources");
+  if (res.status === 401) return showLogin();
+  const sources = await res.json();
+  for (const s of sources) panel(s);
+  await Promise.all(sources.map(loadOlder));
   connect();
 }
 
@@ -138,7 +170,6 @@ $("login").onsubmit = async (e) => {
   else $("error").textContent = "Benutzer oder Passwort falsch";
 };
 $("logout").onclick = async () => { await fetch("/api/logout", { method: "POST" }); showLogin(); };
-$("more").onclick = loadOlder;
 
 fetch("/api/me").then((r) => (r.ok ? showApp() : showLogin()));
 </script>

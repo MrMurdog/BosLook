@@ -3,6 +3,20 @@
 
 use super::Decoder;
 use crate::telegram::{Decoded, Kind};
+use serde::Deserialize;
+
+/// Wie der Inhalt von POCSAG-Meldungen dargestellt wird.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    /// Immer als Text
+    #[default]
+    Alpha,
+    /// Immer als Ziffern
+    Numeric,
+    /// Sub a als Ziffern, sonst als Text
+    Auto,
+}
 
 pub const SYNC: u32 = 0x7CD2_15D8;
 pub const IDLE: u32 = 0x7A89_C197;
@@ -115,15 +129,17 @@ pub struct Pocsag {
     shreg: u32,
     state: State,
     message: Option<Message>,
+    format: Format,
 }
 
 impl Pocsag {
-    pub fn new(baud: u32, sample_rate: u32) -> Pocsag {
+    pub fn new(baud: u32, sample_rate: u32, format: Format) -> Pocsag {
         Pocsag {
             slicer: BitSlicer::new(baud, sample_rate),
             shreg: 0,
             state: State::Hunt,
             message: None,
+            format,
         }
     }
 
@@ -181,7 +197,7 @@ impl Pocsag {
         let Some(m) = self.message.take() else { return };
         let message = if m.data.is_empty() {
             String::new()
-        } else if m.function == 0 {
+        } else if self.format == Format::Numeric || (self.format == Format::Auto && m.function == 0) {
             numeric(&m.data)
         } else {
             alpha(&m.data)
@@ -273,8 +289,8 @@ mod tests {
     use super::*;
     use crate::decoder::testsignal;
 
-    fn decode(samples: &[f32], baud: u32, sr: u32) -> Vec<Decoded> {
-        let mut d = Pocsag::new(baud, sr);
+    fn decode(samples: &[f32], baud: u32, sr: u32, format: Format) -> Vec<Decoded> {
+        let mut d = Pocsag::new(baud, sr, format);
         let mut out = Vec::new();
         d.process(samples, &mut out);
         d.finish(&mut out);
@@ -298,7 +314,7 @@ mod tests {
                 testsignal::PocsagMsg { ric: 8, function: 1, text: "", numeric: false },
             ];
             let samples = testsignal::with_noise(&testsignal::pocsag(&msgs, baud, sr, inverted), 0.1);
-            let got = decode(&samples, baud, sr);
+            let got = decode(&samples, baud, sr, Format::Auto);
             let want: Vec<(String, String, String)> = vec![
                 ("1859992".into(), "a".into(), "80404".into()),
                 ("1234567".into(), "d".into(), "Brand 3 Göppingen, Hauptstr. 12".into()),
@@ -312,6 +328,20 @@ mod tests {
     #[test]
     fn silence_and_noise_give_nothing() {
         let samples = testsignal::with_noise(&vec![0.0; 44100 * 5], 0.3);
-        assert!(decode(&samples, 1200, 44100).is_empty());
+        assert!(decode(&samples, 1200, 44100, Format::Alpha).is_empty());
+    }
+
+    #[test]
+    fn format_selects_alpha_or_numeric() {
+        let msgs = [
+            testsignal::PocsagMsg { ric: 1859992, function: 0, text: "Brand", numeric: false },
+            testsignal::PocsagMsg { ric: 1859993, function: 2, text: "12345", numeric: true },
+        ];
+        let samples = testsignal::pocsag(&msgs, 1200, 22050, false);
+        let texts = |format| decode(&samples, 1200, 22050, format).into_iter().map(|d| d.message).collect::<Vec<_>>();
+        assert_eq!(texts(Format::Alpha)[0], "Brand");
+        assert_eq!(texts(Format::Numeric)[1], "12345");
+        assert_eq!(texts(Format::Auto)[1], texts(Format::Alpha)[1]);
+        assert_ne!(texts(Format::Auto)[0], "Brand");
     }
 }

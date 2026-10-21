@@ -5,8 +5,8 @@ use crate::db::Db;
 use crate::decoder::Bank;
 use crate::filter::Filters;
 use crate::telegram::{Decoded, Telegram};
-use crate::web::{self, App};
-use crate::input;
+use crate::web::{self, App, Settings};
+use crate::{forward, input};
 use anyhow::{Context, Result, bail};
 use argon2::password_hash::phc::PasswordHash;
 use axum_server::tls_rustls::RustlsConfig;
@@ -17,25 +17,41 @@ use tokio::sync::mpsc;
 
 pub async fn run(config_path: &str) -> Result<()> {
     let config = Config::load(config_path)?;
-    if config.users.is_empty() {
+    if config.web.is_some() && config.users.is_empty() {
         bail!("Kein Benutzer konfiguriert. Passwort-Hash erzeugen mit: boslook hash-password");
     }
-    for u in &config.users {
-        PasswordHash::new(&u.password_hash)
-            .map_err(|e| anyhow::anyhow!("Benutzer '{}': ungültiger password_hash ({e})", u.name))?;
+    if config.web.is_none() && !(config.users.is_empty() && config.clients.is_empty()) {
+        bail!("[[user]] und [[client]] funktionieren nur zusammen mit [web]");
+    }
+    let hashes = config.users.iter().map(|u| ("Benutzer", &u.name, &u.password_hash));
+    for (what, name, hash) in hashes.chain(config.clients.iter().map(|c| ("Client", &c.name, &c.token_hash))) {
+        PasswordHash::new(hash).map_err(|e| anyhow::anyhow!("{what} '{name}': ungültiger Hash ({e})"))?;
     }
     if config.inputs.iter().filter(|i| matches!(i.source, Source::Stdin { .. })).count() > 1 {
         bail!("Es kann nur einen Eingang vom Typ 'stdin' geben");
     }
-    for i in &config.inputs {
-        Bank::new(&i.decoders, 22050).with_context(|| format!("Eingang '{}'", i.name))?;
+    for (n, i) in config.inputs.iter().enumerate() {
+        if config.inputs[..n].iter().any(|j| j.name == i.name) {
+            bail!("Eingang '{}' ist doppelt vorhanden, die Namen müssen eindeutig sein", i.name);
+        }
+        Bank::new(&i.decoders, 22050, i.pocsag).with_context(|| format!("Eingang '{}'", i.name))?;
     }
-    let addr: SocketAddr = config.web.listen.parse().context("web.listen")?;
+    let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let filters = Arc::new(Filters::new(&config.filters)?);
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
-    let app = Arc::new(App::new(db, config.users, config.web.tls != Tls::Off));
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);
+    let app = Arc::new(App::new(
+        db,
+        Settings {
+            users: config.users,
+            inputs: config.inputs.iter().map(|i| i.name.clone()).collect(),
+            secure_cookie: config.web.as_ref().is_some_and(|w| w.tls != Tls::Off),
+            clients: config.clients,
+            ingest: tx.clone(),
+            filters: filters.clone(),
+        },
+    ));
     for i in config.inputs {
         let (filters, tx) = (filters.clone(), tx.clone());
         std::thread::spawn(move || {
@@ -46,6 +62,12 @@ pub async fn run(config_path: &str) -> Result<()> {
     }
     drop(tx);
 
+    let forward = config.forward.map(|f| {
+        let (ftx, frx) = mpsc::channel::<Telegram>(1024);
+        tokio::spawn(forward::run(f, frx));
+        ftx
+    });
+
     let store = app.clone();
     tokio::spawn(async move {
         while let Some(mut t) = rx.recv().await {
@@ -54,24 +76,31 @@ pub async fn run(config_path: &str) -> Result<()> {
                 Err(e) => eprintln!("Datenbank: {e:#}"),
             }
             println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
-            let _ = store.live.send(t);
+            let _ = store.live.send(t.clone());
+            if let Some(forward) = &forward {
+                let _ = forward.send(t).await;
+            }
         }
     });
 
+    let (Some(web), Some(addr)) = (config.web, addr) else {
+        std::future::pending::<()>().await;
+        return Ok(());
+    };
     let service = web::router(app).into_make_service();
-    match config.web.tls {
+    match web.tls {
         Tls::Off => {
             eprintln!("Weboberfläche: http://{addr}");
             axum_server::bind(addr).serve(service).await?;
         }
         tls => {
             if tls == Tls::SelfSigned {
-                ensure_self_signed(&config.web.cert, &config.web.key)?;
+                ensure_self_signed(&web.cert, &web.key)?;
             }
             let _ = rustls::crypto::ring::default_provider().install_default();
-            let rustls = RustlsConfig::from_pem_file(&config.web.cert, &config.web.key)
+            let rustls = RustlsConfig::from_pem_file(&web.cert, &web.key)
                 .await
-                .with_context(|| format!("Zertifikat {} / {}", config.web.cert, config.web.key))?;
+                .with_context(|| format!("Zertifikat {} / {}", web.cert, web.key))?;
             eprintln!("Weboberfläche: https://{addr}");
             axum_server::bind_rustls(addr, rustls).serve(service).await?;
         }
@@ -88,17 +117,29 @@ fn run_input(input: &InputConfig, filters: &Filters, tx: &mpsc::Sender<Telegram>
     match &input.source {
         Source::Wav { path } => {
             let rate = hound::WavReader::open(path).with_context(|| format!("WAV-Datei {path}"))?.spec().sample_rate;
-            let mut bank = Bank::new(&input.decoders, rate)?;
+            let mut bank = Bank::new(&input.decoders, rate, input.pocsag)?;
             input::read_wav(path, |samples, _| send(bank.process(samples)))?;
             send(bank.finish());
             eprintln!("Eingang '{}': Datei {path} fertig dekodiert", input.name);
         }
         Source::Stdin { sample_rate } => {
-            let mut bank = Bank::new(&input.decoders, *sample_rate)?;
+            let mut bank = Bank::new(&input.decoders, *sample_rate, input.pocsag)?;
             input::read_stdin_raw(*sample_rate, |samples, _| send(bank.process(samples)))?;
             send(bank.finish());
             eprintln!("Eingang '{}': stdin beendet", input.name);
         }
+        Source::Soundcard { device } => loop {
+            // Bei Fehlern (z. B. USB-Soundkarte abgezogen) nach kurzer Pause neu öffnen
+            let result = input::Soundcard::open(device.as_deref()).and_then(|card| {
+                eprintln!("Eingang '{}': Soundkarte mit {} Hz geöffnet", input.name, card.sample_rate);
+                let mut bank = Bank::new(&input.decoders, card.sample_rate, input.pocsag)?;
+                card.read(|samples| send(bank.process(samples)))
+            });
+            if let Err(e) = result {
+                eprintln!("Eingang '{}': {e:#}, neuer Versuch in 5 s", input.name);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        },
     }
     Ok(())
 }

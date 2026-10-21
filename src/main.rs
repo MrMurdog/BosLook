@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod decoder;
 mod filter;
+mod forward;
 mod input;
 mod serve;
 mod telegram;
@@ -26,20 +27,26 @@ enum Command {
         /// Dekoder, kommagetrennt
         #[arg(short, long, value_delimiter = ',', default_values_t = decoder::ALL.iter().map(|s| s.to_string()))]
         decoders: Vec<String>,
+        /// Darstellung von POCSAG-Meldungen
+        #[arg(short, long, value_enum, default_value_t)]
+        pocsag: decoder::pocsag::Format,
     },
     /// Eingänge auswerten und Weboberfläche starten
     Serve {
         #[arg(short, long, default_value = "boslook.toml")]
         config: String,
     },
+    /// Aufnahmegeräte (Soundkarten) auflisten
+    Devices,
     /// Passwort-Hash für die Konfiguration erzeugen (Passwort wird von stdin gelesen)
     HashPassword,
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Decode { file, decoders } => decode(&file, &decoders),
+        Command::Decode { file, decoders, pocsag } => decode(&file, &decoders, pocsag),
         Command::Serve { config } => tokio::runtime::Runtime::new()?.block_on(serve::run(&config)),
+        Command::Devices => input::list_devices(),
         Command::HashPassword => hash_password(),
     }
 }
@@ -59,9 +66,9 @@ fn hash_password() -> Result<()> {
     Ok(())
 }
 
-fn decode(file: &str, decoders: &[String]) -> Result<()> {
+fn decode(file: &str, decoders: &[String], pocsag: decoder::pocsag::Format) -> Result<()> {
     let spec = hound::WavReader::open(file)?.spec();
-    let mut bank = decoder::Bank::new(decoders, spec.sample_rate)?;
+    let mut bank = decoder::Bank::new(decoders, spec.sample_rate, pocsag)?;
     let print = |pos: f64, d: telegram::Decoded| {
         let t = pos as u64;
         println!(

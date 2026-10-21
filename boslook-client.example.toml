@@ -1,0 +1,20 @@
+# BosLook – Beispielkonfiguration für einen Client, der seine Telegramme an einen
+# BosLook-Server weiterleitet. Kopieren nach boslook.toml und anpassen.
+#
+# Ohne [web] läuft keine Weboberfläche; die Telegramme werden trotzdem lokal gespeichert.
+
+database = "boslook.db"
+
+[forward]
+# Adresse der Weboberfläche des Servers
+server = "https://mein-server.de:8443"
+# Name und Token wie beim Server unter [[client]] eingetragen
+name = "Zuhause"
+token = "ERSETZEN"
+# Nur bei tls = "self-signed" auf dem Server: dessen Zertifikatsdatei (boslook-cert.pem)
+# hierher kopieren. Dann wird genau dieses Zertifikat akzeptiert.
+# cert = "server-cert.pem"
+
+[[input]]
+name = "Funkscanner"
+type = "soundcard"

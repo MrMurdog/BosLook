@@ -16,11 +16,25 @@ key = "boslook-key.pem"
 name = "admin"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
 
+# Clients, die Telegramme an diesen Server weiterleiten (siehe boslook-client.example.toml).
+# Token frei wählen (lang und zufällig), Hash erzeugen mit: boslook hash-password
+[[client]]
+name = "Zuhause"
+token_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
+
 # Eingänge. Dekoder: pocsag512, pocsag1200, fms, zvei (Standard: alle)
+# pocsag: Darstellung der POCSAG-Meldungen: "alpha" (Standard, immer Text),
+#         "numeric" (immer Ziffern) oder "auto" (Sub a als Ziffern, sonst Text)
 [[input]]
 name = "Testaufnahme"
 type = "wav"
 path = "test-wav/Leipsch_viel_cutted.wav"
+
+# Soundkarte, Gerät wie von "boslook devices" angezeigt (ohne device: Standardgerät)
+# [[input]]
+# name = "Funkscanner"
+# type = "soundcard"
+# device = "alsa:plughw:CARD=Device,DEV=0"
 
 # Live-Audio von stdin (signed 16 Bit, mono), z. B.:
 #   rtl_fm -f 173.255M -M fm -s 22050 - | boslook serve
@@ -30,6 +44,7 @@ name = "SDR"
 type = "stdin"
 sample_rate = 22050
 decoders = ["pocsag512", "pocsag1200"]
+pocsag = "auto"
 
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
 # Gibt es Filter ohne "exclude", muss mindestens einer passen.

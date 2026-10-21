@@ -1,4 +1,4 @@
-//! Audioquellen: WAV-Datei oder rohe 16-Bit-Samples von stdin (z. B. von `rtl_fm` oder `arecord`).
+//! Audioquellen: WAV-Datei, rohe 16-Bit-Samples von stdin (z. B. von `rtl_fm` oder `arecord`) oder Soundkarte.
 
 use anyhow::{Context, Result};
 use std::io::Read;
@@ -57,4 +57,104 @@ pub fn read_stdin_raw(sample_rate: u32, mut f: impl FnMut(&[f32], f64)) -> Resul
         total += block.len();
         f(&block, total as f64 / sample_rate as f64);
     }
+}
+
+/// Aufnahme von einer Soundkarte. Ausgewertet wird nur der erste Kanal.
+pub struct Soundcard {
+    _stream: cpal::Stream,
+    pub sample_rate: u32,
+    rx: std::sync::mpsc::Receiver<Result<Vec<f32>, String>>,
+}
+
+impl Soundcard {
+    /// `device`: ID oder Name aus `boslook devices`, sonst das Standardgerät.
+    pub fn open(device: Option<&str>) -> Result<Soundcard> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let host = cpal::default_host();
+        let dev = match device {
+            None => host.default_input_device().context("Kein Aufnahmegerät gefunden")?,
+            Some(wanted) => host
+                .input_devices()?
+                .find(|d| {
+                    d.id().is_ok_and(|id| id.to_string() == wanted)
+                        || d.description().is_ok_and(|desc| desc.name() == wanted)
+                })
+                .with_context(|| format!("Aufnahmegerät '{wanted}' nicht gefunden (siehe boslook devices)"))?,
+        };
+        let config = dev.default_input_config()?;
+        let sample_rate = config.sample_rate();
+        let channels = config.channels() as usize;
+        let format = config.sample_format();
+        let mut stream_config: cpal::StreamConfig = config.into();
+        // Der Standardpuffer ist bei manchen Treibern so klein, dass ständig Samples verloren gehen
+        let wanted = sample_rate / 10;
+        if let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size()
+            && (*min..=*max).contains(&wanted)
+        {
+            stream_config.buffer_size = cpal::BufferSize::Fixed(wanted);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stream = match format {
+            cpal::SampleFormat::I16 => build::<i16>(&dev, &stream_config, channels, tx)?,
+            cpal::SampleFormat::I32 => build::<i32>(&dev, &stream_config, channels, tx)?,
+            cpal::SampleFormat::F32 => build::<f32>(&dev, &stream_config, channels, tx)?,
+            format => anyhow::bail!("Sampleformat {format} der Soundkarte wird nicht unterstützt"),
+        };
+        stream.play()?;
+        Ok(Soundcard { _stream: stream, sample_rate, rx })
+    }
+
+    /// Liefert die Samples an `f`, bis die Soundkarte einen Fehler meldet.
+    pub fn read(&self, mut f: impl FnMut(&[f32])) -> Result<()> {
+        loop {
+            match self.rx.recv() {
+                Ok(Ok(samples)) => f(&samples),
+                Ok(Err(e)) => anyhow::bail!("Soundkarte: {e}"),
+                Err(_) => anyhow::bail!("Soundkarte: Datenstrom beendet"),
+            }
+        }
+    }
+}
+
+fn build<T>(
+    dev: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    tx: std::sync::mpsc::Sender<Result<Vec<f32>, String>>,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::traits::DeviceTrait;
+    let errors = tx.clone();
+    Ok(dev.build_input_stream(
+        *config,
+        move |data: &[T], _: &_| {
+            let _ = tx.send(Ok(data.iter().step_by(channels).map(|s| s.to_sample::<f32>()).collect()));
+        },
+        move |e| match e.kind() {
+            // Kurze Aussetzer sind kein Grund, die Aufnahme abzubrechen
+            cpal::ErrorKind::Xrun => eprintln!("Soundkarte: {e}"),
+            _ => {
+                let _ = errors.send(Err(e.to_string()));
+            }
+        },
+        None,
+    )?)
+}
+
+/// Gibt die Aufnahmegeräte für die Konfiguration (`device = ...`) aus.
+pub fn list_devices() -> Result<()> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let default = host.default_input_device().and_then(|d| d.id().ok());
+    for dev in host.input_devices()? {
+        let id = dev.id()?;
+        let name = dev.description().map(|d| d.name().to_string()).unwrap_or_default();
+        let rate = dev.default_input_config().map(|c| format!("{} Hz", c.sample_rate())).unwrap_or_default();
+        let mark = if Some(&id) == default.as_ref() { " (Standard)" } else { "" };
+        println!("{id}\t{name}\t{rate}{mark}");
+    }
+    Ok(())
 }

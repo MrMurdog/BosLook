@@ -1,6 +1,8 @@
-use crate::config::UserConfig;
+use crate::config::{ClientConfig, UserConfig};
 use crate::db::Db;
-use crate::telegram::Telegram;
+use crate::filter::Filters;
+use crate::forward::{Ack, Envelope};
+use crate::telegram::{Decoded, Telegram};
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -11,7 +13,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 const SESSION_COOKIE: &str = "boslook_session";
 
@@ -19,19 +21,38 @@ pub struct App {
     pub db: Mutex<Db>,
     pub live: broadcast::Sender<Telegram>,
     users: Vec<UserConfig>,
+    /// Namen der konfigurierten Eingänge, damit sie auch ohne Telegramme angezeigt werden
+    inputs: Vec<String>,
     /// Sitzungs-Token -> Benutzername
     sessions: Mutex<HashMap<String, String>>,
     secure_cookie: bool,
+    clients: Vec<ClientConfig>,
+    /// Weg zur Speicherung für Telegramme von Clients
+    ingest: mpsc::Sender<Telegram>,
+    filters: Arc<Filters>,
+}
+
+pub struct Settings {
+    pub users: Vec<UserConfig>,
+    pub inputs: Vec<String>,
+    pub secure_cookie: bool,
+    pub clients: Vec<ClientConfig>,
+    pub ingest: mpsc::Sender<Telegram>,
+    pub filters: Arc<Filters>,
 }
 
 impl App {
-    pub fn new(db: Db, users: Vec<UserConfig>, secure_cookie: bool) -> App {
+    pub fn new(db: Db, s: Settings) -> App {
         App {
             db: Mutex::new(db),
             live: broadcast::channel(256).0,
-            users,
+            users: s.users,
+            inputs: s.inputs,
             sessions: Mutex::new(HashMap::new()),
-            secure_cookie,
+            secure_cookie: s.secure_cookie,
+            clients: s.clients,
+            ingest: s.ingest,
+            filters: s.filters,
         }
     }
 
@@ -52,8 +73,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/sources", get(sources))
         .route("/api/telegrams", get(telegrams))
         .route("/api/live", get(live))
+        .route("/api/ingest", get(ingest))
         .with_state(app)
 }
 
@@ -67,14 +90,7 @@ async fn login(State(app): State<Arc<App>>, Json(req): Json<LoginRequest>) -> Re
     let Some(hash) = app.users.iter().find(|u| u.name == req.user).map(|u| u.password_hash.clone()) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    // Argon2 ist absichtlich langsam, darum nicht im async-Thread rechnen
-    let ok = tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash)
-            .is_ok_and(|h| argon2::Argon2::default().verify_password(req.password.as_bytes(), &h).is_ok())
-    })
-    .await
-    .unwrap_or(false);
-    if !ok {
+    if !verify(hash, req.password).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
@@ -87,6 +103,15 @@ async fn login(State(app): State<Arc<App>>, Json(req): Json<LoginRequest>) -> Re
     let secure = if app.secure_cookie { "; Secure" } else { "" };
     let cookie = format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict{secure}");
     ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
+}
+
+async fn verify(hash: String, secret: String) -> bool {
+    // Argon2 ist absichtlich langsam, darum nicht im async-Thread rechnen
+    tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&hash).is_ok_and(|h| argon2::Argon2::default().verify_password(secret.as_bytes(), &h).is_ok())
+    })
+    .await
+    .unwrap_or(false)
 }
 
 async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> impl IntoResponse {
@@ -109,8 +134,22 @@ async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
 }
 
+async fn sources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let stored = match app.db.lock().unwrap().sources() {
+        Ok(list) => list,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mut list = app.inputs.clone();
+    list.extend(stored.into_iter().filter(|s| !app.inputs.contains(s)));
+    Json(list).into_response()
+}
+
 #[derive(Deserialize)]
 struct Page {
+    source: String,
     limit: Option<u32>,
     before: Option<i64>,
 }
@@ -120,7 +159,7 @@ async fn telegrams(State(app): State<Arc<App>>, headers: HeaderMap, Query(page):
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let limit = page.limit.unwrap_or(100).min(1000);
-    match app.db.lock().unwrap().latest(limit, page.before) {
+    match app.db.lock().unwrap().latest(&page.source, limit, page.before) {
         Ok(list) => Json(list).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -147,4 +186,38 @@ async fn send_live(mut socket: WebSocket, mut rx: broadcast::Receiver<Telegram>)
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
+}
+
+/// Telegramme von einem Client annehmen (siehe `forward.rs`).
+async fn ingest(State(app): State<Arc<App>>, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let name = header(header::HeaderName::from_static("x-boslook-client"));
+    let token = header(header::AUTHORIZATION).strip_prefix("Bearer ").unwrap_or_default().to_string();
+    let Some(hash) = app.clients.iter().find(|c| c.name == name).map(|c| c.token_hash.clone()) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !verify(hash, token).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.on_upgrade(move |socket| receive(socket, app, name))
+}
+
+async fn receive(mut socket: WebSocket, app: Arc<App>, name: String) {
+    eprintln!("Client '{name}' verbunden");
+    while let Some(Ok(msg)) = socket.recv().await {
+        let Message::Text(text) = msg else { continue };
+        let Ok(Envelope { seq, telegram: t }) = serde_json::from_str(&text) else {
+            eprintln!("Client '{name}': ungültige Nachricht");
+            break;
+        };
+        let d = Decoded { kind: t.kind, address: t.address.clone(), sub: t.sub.clone(), message: t.message.clone() };
+        if app.filters.allows(&d) && app.ingest.send(t).await.is_err() {
+            break;
+        }
+        let ack = serde_json::to_string(&Ack { ack: seq }).unwrap();
+        if socket.send(Message::Text(ack.into())).await.is_err() {
+            break;
+        }
+    }
+    eprintln!("Client '{name}' getrennt");
 }
