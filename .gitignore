@@ -2,6 +2,7 @@
 /test-wav
 /graphify-out
 boslook.toml
+boslook-desktop.toml
 *.db
 *.pem
 

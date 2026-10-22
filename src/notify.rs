@@ -84,9 +84,27 @@ struct Alarm {
 pub struct Notify {
     alarms: Vec<Alarm>,
     senders: Vec<mpsc::Sender<(String, String, Priority)>>,
-    /// Gleiche Telegramme innerhalb dieser Zeit nur einmal melden (Alarme werden oft wiederholt)
-    repeat: Duration,
+    repeats: Repeats,
+}
+
+/// Erkennt Wiederholungen: gleiche Telegramme innerhalb von `window` nur einmal melden
+/// (Alarme werden oft mehrfach gesendet). Das Fenster zählt ab der letzten Wiederholung.
+pub struct Repeats {
+    window: Duration,
     seen: HashMap<String, Instant>,
+}
+
+impl Repeats {
+    pub fn new(window: Duration) -> Repeats {
+        Repeats { window, seen: HashMap::new() }
+    }
+
+    pub fn is_repeat(&mut self, t: &Telegram, now: Instant) -> bool {
+        let window = self.window;
+        self.seen.retain(|_, last| now.duration_since(*last) < window);
+        let key = format!("{}|{}|{}|{}", t.kind.as_str(), t.address, t.sub, t.message);
+        self.seen.insert(key, now).is_some()
+    }
 }
 
 impl Notify {
@@ -106,23 +124,16 @@ impl Notify {
                 tx
             })
             .collect();
-        Ok(Notify { alarms, senders, repeat, seen: HashMap::new() })
+        Ok(Notify { alarms, senders, repeats: Repeats::new(repeat) })
     }
 
     pub fn handle(&mut self, t: &Telegram) {
-        if self.is_repeat(t, Instant::now()) {
+        if self.repeats.is_repeat(t, Instant::now()) {
             return;
         }
         for (target, title, priority) in targets(&self.alarms, t) {
             let _ = self.senders[target].send((title, text(t), priority));
         }
-    }
-
-    fn is_repeat(&mut self, t: &Telegram, now: Instant) -> bool {
-        let repeat = self.repeat;
-        self.seen.retain(|_, last| now.duration_since(*last) < repeat);
-        let key = format!("{}|{}|{}|{}", t.kind.as_str(), t.address, t.sub, t.message);
-        self.seen.insert(key, now).is_some()
     }
 }
 
@@ -175,7 +186,7 @@ fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String, Priority)> {
     out.into_iter().map(|(i, names, priority)| (i, names.join(", "), priority)).collect()
 }
 
-fn text(t: &Telegram) -> String {
+pub fn text(t: &Telegram) -> String {
     let mut head = format!("{} {}", t.kind.as_str().to_uppercase(), t.address);
     if !t.sub.is_empty() {
         head = format!("{head} {}", t.sub);
@@ -298,7 +309,7 @@ mod tests {
 
     #[test]
     fn repeats_are_suppressed_within_window() {
-        let mut n = Notify::new(&[], Vec::new(), Duration::from_secs(60)).unwrap();
+        let mut n = Repeats::new(Duration::from_secs(60));
         let start = Instant::now();
         let alarm = telegram(Kind::Pocsag, "1859992", "Brand 3");
         assert!(!n.is_repeat(&alarm, start));

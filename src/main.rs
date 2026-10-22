@@ -1,16 +1,5 @@
-mod config;
-mod db;
-mod decoder;
-mod filter;
-mod forward;
-mod input;
-mod notify;
-mod serve;
-mod telegram;
-mod weather;
-mod web;
-
 use anyhow::Result;
+use boslook::{config, decoder, input, notify, serve, telegram, weather};
 use argon2::password_hash::PasswordHasher;
 use clap::{Parser, Subcommand};
 

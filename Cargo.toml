@@ -1,7 +1,20 @@
 [package]
 name = "boslook"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
+
+[features]
+# Desktop-App (boslook-desktop): cargo build --release --features desktop
+desktop = ["dep:eframe", "dep:reqwest", "dep:tray-icon", "dep:notify-rust", "dep:rodio"]
+
+[[bin]]
+name = "boslook"
+path = "src/main.rs"
+
+[[bin]]
+name = "boslook-desktop"
+path = "src/desktop/main.rs"
+required-features = ["desktop"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -11,12 +24,16 @@ axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
+eframe = { version = "0.37", optional = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hound = "3.5.1"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "rustls", "ring", "webpki-roots"] }
+notify-rust = { version = "4", optional = true }
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
 regex = "1.13.1"
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls-no-provider", "json", "query"] }
+rodio = { version = "0.23", optional = true }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -24,5 +41,7 @@ serde_json = "1.0.154"
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "time"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 toml = "1.1.8"
+tray-icon = { version = "0.26", optional = true, default-features = false, features = ["ksni"] }
 ureq = "3.5.0"
 webpki-roots = "1.0.10"
+

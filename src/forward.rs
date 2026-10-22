@@ -83,7 +83,7 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
     let mut request = url.as_str().into_client_request()?;
     request.headers_mut().insert("x-boslook-client", config.name.parse()?);
     request.headers_mut().insert("authorization", format!("Bearer {}", config.token).parse()?);
-    let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config(config)?));
+    let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config(config.cert.as_deref())?));
     let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
         .await
         .context("Verbindung fehlgeschlagen")?;
@@ -132,10 +132,12 @@ fn text(seq: u64, telegram: &Telegram) -> Message {
     Message::Text(serde_json::to_string(&envelope).unwrap().into())
 }
 
-fn tls_config(config: &ForwardConfig) -> Result<rustls::ClientConfig> {
+/// TLS für Verbindungen zu einem BosLook-Server: mit `cert` wird genau dieses Zertifikat
+/// akzeptiert, sonst wird über die üblichen Zertifizierungsstellen geprüft.
+pub fn tls_config(cert: Option<&str>) -> Result<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
-    Ok(match &config.cert {
+    Ok(match cert {
         Some(path) => {
             let cert = CertificateDer::from_pem_file(path).with_context(|| format!("Zertifikat {path}"))?;
             builder

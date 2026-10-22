@@ -125,6 +125,31 @@ Ist der Server nicht erreichbar, puffert der Client bis zu 10 000 Telegramme und
 nach dem Verbindungsaufbau mit ihrer ursprünglichen Empfangszeit nach. Die Filter des
 Servers gelten auch für weitergeleitete Telegramme.
 
+## Desktop-App
+
+`boslook-desktop` verbindet sich wie die Weboberfläche mit einem BosLook-Server und zeigt die
+Telegramme in Reitern. Zusätzlich führt es lokale Ereignisse aus (`[[event]]`, Felder wie bei
+den Filtern):
+
+- `priority = "normal"`: Systembenachrichtigung
+- `priority = "high"` / `"emergency"`: Fenster im Vordergrund, bis es quittiert wird
+- `sound`: Tondatei abspielen
+- `program` und `args`: Programm starten, in `args` werden `{kind}`, `{address}`, `{sub}`,
+  `{message}` und `{source}` ersetzt
+
+Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). Beim ersten
+Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
+„Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten.
+
+Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter
+Linux braucht das eine Arbeitsumgebung mit Infobereich (KDE, XFCE, GNOME mit
+AppIndicator-Erweiterung), sonst wird die App beim Schließen beendet.
+
+```sh
+cargo build --release --features desktop --bin boslook-desktop
+cargo build --release --features desktop --bin boslook-desktop --target x86_64-pc-windows-gnu
+```
+
 ## Tests
 
 ```sh
