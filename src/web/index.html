@@ -8,12 +8,12 @@
 <style>
   :root {
     --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea;
-    --accent: #c62828; --pocsag: #c62828; --fms: #1565c0; --zvei: #2e7d32; --wetter: #ef6c00; --new: #fff6d6;
+    --accent: #005795; --danger: #dd3127; --pocsag: #dd3127; --fms: #1565c0; --zvei: #2e7d32; --wetter: #ef6c00; --new: #fff6d6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c;
-      --accent: #ef5350; --pocsag: #ef5350; --fms: #64b5f6; --zvei: #81c784; --wetter: #ffb74d; --new: #3a3420;
+      --accent: #4a9be0; --danger: #ef5350; --pocsag: #ef5350; --fms: #64b5f6; --zvei: #81c784; --wetter: #ffb74d; --new: #3a3420;
     }
   }
   * { box-sizing: border-box; }
@@ -22,7 +22,7 @@
   header h1 { margin: 0; font-size: 18px; } header h1 span { color: var(--accent); }
   #status { margin-left: auto; color: var(--muted); font-size: 13px; }
   #status.on::before { content: "●"; color: #43a047; margin-right: 4px; }
-  #status.off::before { content: "●"; color: var(--accent); margin-right: 4px; }
+  #status.off::before { content: "●"; color: var(--danger); margin-right: 4px; }
   button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   main { padding: 16px; }
@@ -49,21 +49,34 @@
   tr.new { background: var(--new); transition: background 3s; }
   .more { margin: 12px auto; display: block; }
   #login { max-width: 320px; margin: 15vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; }
-  #login h1 { margin: 0 0 16px; font-size: 22px; } #login h1 span { color: var(--accent); }
+  /* Der Schriftzug im Banner ist hellgrau und braucht einen dunklen Hintergrund */
+  #login .banner { display: block; width: 100%; margin: 0 0 16px; padding: 14px 18px; border-radius: 8px; background: #1b1f27; }
   #login label { display: block; margin: 10px 0 4px; color: var(--muted); }
   #login input { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   #login button { width: 100%; margin-top: 16px; }
-  #error { color: var(--accent); min-height: 1.4em; margin-top: 8px; }
+  #error { color: var(--danger); min-height: 1.4em; margin-top: 8px; }
   #settings textarea { width: 100%; height: calc(100vh - 190px); font: 13px/1.4 ui-monospace, monospace; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); resize: vertical; }
   #settings .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
   #settings-msg { white-space: pre-wrap; font-size: 13px; }
-  #settings-msg.err { color: var(--accent); font-family: ui-monospace, monospace; }
+  #settings-msg.err { color: var(--danger); font-family: ui-monospace, monospace; }
+  #cfg-form fieldset { margin: 0 0 14px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  #cfg-form legend { font-weight: 600; padding: 0 6px; }
+  #cfg-form .help { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  #cfg-form .item { border-top: 1px solid var(--line); padding: 10px 0; }
+  #cfg-form .row { display: grid; grid-template-columns: 14rem minmax(0, 32rem); gap: 4px 12px; align-items: start; margin: 6px 0; }
+  #cfg-form .row > span:first-child { padding-top: 7px; }
+  #cfg-form .row small { grid-column: 2; color: var(--muted); font-size: 12px; }
+  #cfg-form input:not([type=checkbox]), #cfg-form select, #cfg-form textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  #cfg-form textarea { height: auto; resize: vertical; }
+  #cfg-form .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-top: 6px; }
+  #cfg-form .req { color: var(--danger); }
+  @media (max-width: 640px) { #cfg-form .row { grid-template-columns: 1fr; } #cfg-form .row small { grid-column: 1; } #cfg-form .row > span:first-child { padding-top: 0; } }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <form id="login" hidden>
-  <h1>Bos<span>Look</span></h1>
+  <img class="banner" src="/banner.svg" alt="BosLook">
   <label for="user">Benutzer</label><input id="user" autocomplete="username" required>
   <label for="password">Passwort</label><input id="password" type="password" autocomplete="current-password" required>
   <button class="primary">Anmelden</button>
@@ -82,9 +95,11 @@
       <button id="settings-back">Zurück</button>
       <button id="save" class="primary">Speichern</button>
       <button id="save-restart">Speichern und neu starten</button>
+      <button id="mode">Als Text bearbeiten</button>
       <span id="settings-msg"></span>
     </div>
-    <textarea id="config" spellcheck="false"></textarea>
+    <form id="cfg-form" autocomplete="off"></form>
+    <textarea id="config" spellcheck="false" hidden></textarea>
   </main>
   <main id="telegrams">
     <p id="empty">Noch keine Quellen vorhanden.</p>
@@ -288,25 +303,176 @@ function showSettings(on) {
   $("settings-btn").hidden = on;
 }
 
-$("settings-btn").onclick = async () => {
-  const res = await fetch("/api/config");
+// Die Konfiguration wird im Formular bearbeitet, als Rückfallebene auch als Text
+let textMode = false;
+let cfg = null; // { schema, values, devices }
+let dirty = false;
+$("settings").addEventListener("input", () => { dirty = true; });
+$("settings").addEventListener("change", () => { dirty = true; });
+
+async function loadConfig() {
+  const res = await fetch(textMode ? "/api/config" : "/api/config/form");
   if (res.status === 401) return showLogin();
-  $("config").value = await res.text();
-  $("settings-msg").textContent = ""; $("settings-msg").className = "";
+  if (!res.ok) { showMsg(await res.text(), true); return; }
+  if (textMode) $("config").value = await res.text();
+  else { cfg = await res.json(); renderForm(); }
+  $("cfg-form").hidden = textMode; $("config").hidden = !textMode;
+  dirty = false;
+  $("mode").textContent = textMode ? "Als Formular bearbeiten" : "Als Text bearbeiten";
+}
+function showMsg(text, error) {
+  $("settings-msg").textContent = text; $("settings-msg").className = error ? "err" : "";
+}
+
+$("settings-btn").onclick = async () => {
+  showMsg("");
+  await loadConfig();
   showSettings(true);
 };
 $("settings-back").onclick = () => showSettings(false);
+$("mode").onclick = () => {
+  if (dirty && !confirm("Ungespeicherte Änderungen gehen beim Umschalten verloren. Umschalten?")) return;
+  textMode = !textMode; showMsg(""); loadConfig();
+};
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+
+// Neuer Eintrag mit Standardwerten; Auswahlfelder ohne Standard nehmen den ersten Wert
+function newItem(section) {
+  const item = {};
+  for (const f of section.fields) {
+    if (f.default !== null) item[f.key] = structuredClone(f.default);
+    else if (f.required && f.input.type === "select") item[f.key] = f.input.options[0];
+  }
+  return item;
+}
+
+function renderForm() {
+  dirty = true;
+  const scroll = scrollY;
+  $("cfg-form").replaceChildren(...cfg.schema.map(section));
+  scrollTo(0, scroll);
+}
+
+function section(s) {
+  const v = cfg.values;
+  const box = el("fieldset");
+  box.append(el("legend", "", s.title));
+  if (s.help) box.append(el("p", "help", s.help));
+  if (s.kind === "root") box.append(...fields(s.fields, v));
+  else if (s.kind === "table") box.append(...fields(s.fields, v[s.key] ??= newItem(s)));
+  else if (s.kind === "optional") {
+    const on = el("input"); on.type = "checkbox"; on.checked = v[s.key] != null;
+    on.onchange = () => { v[s.key] = on.checked ? newItem(s) : null; renderForm(); };
+    const label = el("label", "checks"); label.append(on, "aktiv");
+    box.append(label);
+    if (v[s.key] != null) box.append(...fields(s.fields, v[s.key]));
+  } else {
+    const list = v[s.key] ??= [];
+    list.forEach((item, i) => {
+      const div = el("div", "item");
+      const remove = el("button", "", "Entfernen"); remove.type = "button";
+      remove.onclick = () => { list.splice(i, 1); renderForm(); };
+      div.append(...fields(s.fields, item), remove);
+      box.append(div);
+    });
+    const add = el("button", "", "+ Hinzufügen"); add.type = "button";
+    add.onclick = () => { list.push(newItem(s)); renderForm(); };
+    box.append(add);
+  }
+  return box;
+}
+
+function fields(list, obj) {
+  return list.filter((f) => !f.when || f.when[1].includes(obj[f.when[0]])).map((f) => {
+    // Mehrfachauswahl nicht in ein <label>, sonst schaltet ein Klick auf den Namen das erste Kästchen
+    const row = el(["choices", "names"].includes(f.input.type) ? "div" : "label", "row");
+    const name = el("span", "", f.label);
+    if (f.required) name.append(el("span", "req", " *"));
+    row.append(name, input(f, obj));
+    if (f.help) row.append(el("small", "", f.help));
+    return row;
+  });
+}
+
+function input(f, obj) {
+  const type = f.input.type, value = obj[f.key];
+  const set = (v) => { obj[f.key] = v; };
+  if (type === "bool") {
+    const e = el("input"); e.type = "checkbox"; e.checked = !!value;
+    e.onchange = () => set(e.checked);
+    const wrap = el("span", "checks"); wrap.append(e);
+    return wrap;
+  }
+  if (type === "select" || type === "device") {
+    const e = el("select");
+    let options = type === "device"
+      ? [["", "Standardgerät"], ...cfg.devices.map((d) => [d.id, d.id + " – " + d.label.replace("\t", ", ")])]
+      : f.input.options.map((o) => [o, o]);
+    if (type === "select" && !f.required && f.default === null) options.unshift(["", "–"]);
+    if (value && !options.some(([o]) => o === value)) options.push([value, value]);
+    for (const [o, text] of options) e.append(new Option(text, o, false, o === (value ?? "")));
+    // Andere Felder hängen evtl. von der Auswahl ab (z. B. Typ des Eingangs)
+    e.onchange = () => { set(e.value); renderForm(); };
+    return e;
+  }
+  if (type === "choices" || type === "names") {
+    const options = type === "names" ? (cfg.values[f.input.options] ?? []).map((n) => n.name).filter(Boolean) : [...f.input.options];
+    for (const v of value ?? []) if (!options.includes(v)) options.push(v);
+    const wrap = el("span", "checks" + (type === "names" ? " names" : ""));
+    wrap.refresh = () => wrap.replaceWith(input(f, obj));
+    for (const o of options) {
+      const c = el("input"); c.type = "checkbox"; c.checked = (value ?? []).includes(o);
+      c.onchange = () => set(options.filter((x, i) => wrap.querySelectorAll("input")[i].checked));
+      const l = el("label"); l.append(c, " " + o);
+      wrap.append(l);
+    }
+    return wrap;
+  }
+  if (type === "lines") {
+    const e = el("textarea"); e.rows = 3; e.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+    e.oninput = () => set(e.value);
+    return e;
+  }
+  const e = el("input");
+  e.value = type === "secret" ? "" : value ?? "";
+  if (type === "password" || type === "secret") { e.type = "password"; e.autocomplete = "new-password"; }
+  if (type === "number") e.inputMode = "numeric";
+  if (type === "secret") {
+    // Gespeichert ist nur der Hash: leer lassen = unverändert
+    e.placeholder = typeof value === "string" ? "unverändert" : "neu festlegen";
+    const old = typeof value === "string" ? value : null;
+    e.oninput = () => set(e.value ? { new: e.value } : old);
+  } else e.oninput = () => {
+    set(e.value);
+    // Namen werden in anderen Abschnitten zur Auswahl angeboten (Ziele der Alarme)
+    if (f.key === "name") for (const w of $("cfg-form").querySelectorAll(".names")) w.refresh();
+  };
+  return e;
+}
 
 async function saveConfig(restart) {
   const msg = $("settings-msg");
-  const res = await fetch("/api/config", { method: "PUT", body: $("config").value });
+  const res = textMode
+    ? await fetch("/api/config", { method: "PUT", body: $("config").value })
+    : await fetch("/api/config/form", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg.values) });
   if (res.status === 401) return showLogin();
   if (!res.ok) {
     msg.className = "err"; msg.textContent = "Nicht gespeichert: " + await res.text();
     return;
   }
   msg.className = "";
-  if (!restart) { msg.textContent = "Gespeichert. Wirksam nach einem Neustart."; return; }
+  if (!restart) {
+    // Neu laden, damit Listeneinträge und Passwort-Hashes zum gespeicherten Stand passen
+    await loadConfig();
+    showMsg("Gespeichert. Wirksam nach einem Neustart.");
+    return;
+  }
   msg.textContent = "Gespeichert, BosLook startet neu …";
   await fetch("/api/restart", { method: "POST" });
   // Sitzungen gehen beim Neustart verloren, darum danach neu anmelden

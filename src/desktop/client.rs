@@ -24,12 +24,16 @@ pub enum FromClient {
     Reset { sources: Vec<String>, history: Vec<Telegram> },
     Telegram(Telegram),
     ServerConfig(Result<String, String>),
+    /// Schema, Werte und Soundkarten für das Formular
+    ServerForm(Result<serde_json::Value, String>),
     Saved(Result<String, String>),
 }
 
 pub enum ToClient {
     LoadServerConfig,
+    LoadServerForm,
     SaveServerConfig { text: String, restart: bool },
+    SaveServerForm { values: serde_json::Value, restart: bool },
 }
 
 /// Startet die Verbindung in einem eigenen Thread. Jede Nachricht an die Oberfläche weckt sie über `wake` auf.
@@ -73,10 +77,11 @@ pub fn spawn(
 }
 
 fn not_connected(cmd: ToClient) -> FromClient {
-    let e = Err("Nicht mit dem Server verbunden".to_string());
+    let e = "Nicht mit dem Server verbunden".to_string();
     match cmd {
-        ToClient::LoadServerConfig => FromClient::ServerConfig(e),
-        ToClient::SaveServerConfig { .. } => FromClient::Saved(e),
+        ToClient::LoadServerConfig => FromClient::ServerConfig(Err(e)),
+        ToClient::LoadServerForm => FromClient::ServerForm(Err(e)),
+        ToClient::SaveServerConfig { .. } | ToClient::SaveServerForm { .. } => FromClient::Saved(Err(e)),
     }
 }
 
@@ -150,8 +155,18 @@ async fn session(
                     let result = async { get("/api/config").send().await?.error_for_status()?.text().await }.await;
                     send(FromClient::ServerConfig(result.map_err(|e| e.to_string())));
                 }
+                Some(ToClient::LoadServerForm) => {
+                    let result = async { get("/api/config/form").send().await?.error_for_status()?.json().await }.await;
+                    send(FromClient::ServerForm(result.map_err(|e| e.to_string())));
+                }
                 Some(ToClient::SaveServerConfig { text, restart }) => {
-                    let result = save_server_config(&http, &base, &cookie, text, restart).await;
+                    let request = http.put(format!("{base}/api/config")).body(text);
+                    let result = save_server_config(&http, &base, &cookie, request, restart).await;
+                    send(FromClient::Saved(result.map_err(|e| format!("{e:#}"))));
+                }
+                Some(ToClient::SaveServerForm { values, restart }) => {
+                    let request = http.put(format!("{base}/api/config/form")).json(&values);
+                    let result = save_server_config(&http, &base, &cookie, request, restart).await;
                     send(FromClient::Saved(result.map_err(|e| format!("{e:#}"))));
                 }
             },
@@ -159,8 +174,8 @@ async fn session(
     }
 }
 
-async fn save_server_config(http: &reqwest::Client, base: &str, cookie: &str, text: String, restart: bool) -> Result<String> {
-    let res = http.put(format!("{base}/api/config")).header(COOKIE, cookie).body(text).send().await?;
+async fn save_server_config(http: &reqwest::Client, base: &str, cookie: &str, request: reqwest::RequestBuilder, restart: bool) -> Result<String> {
+    let res = request.header(COOKIE, cookie).send().await?;
     if !res.status().is_success() {
         bail!("Nicht gespeichert: {}", res.text().await?);
     }

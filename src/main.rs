@@ -1,6 +1,5 @@
 use anyhow::Result;
 use boslook::{config, decoder, input, notify, serve, telegram, weather};
-use argon2::password_hash::PasswordHasher;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -73,10 +72,7 @@ fn hash_password() -> Result<()> {
     if password.is_empty() {
         anyhow::bail!("Leeres Passwort");
     }
-    let hash = argon2::Argon2::default()
-        .hash_password(password.as_bytes())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("{hash}");
+    println!("{}", boslook::form::hash(password)?);
     Ok(())
 }
 

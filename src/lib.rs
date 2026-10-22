@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod decoder;
 pub mod filter;
+pub mod form;
 pub mod forward;
 pub mod input;
 pub mod notify;

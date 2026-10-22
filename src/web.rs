@@ -74,6 +74,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(|| async { Html(include_str!("web/index.html")) }))
         .route("/icon.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../images/icon.svg")) }))
+        .route("/banner.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../images/Logo-Banner.svg")) }))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
@@ -82,6 +83,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/live", get(live))
         .route("/api/ingest", get(ingest))
         .route("/api/config", get(get_config).put(put_config))
+        .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
         .with_state(app)
 }
@@ -243,6 +245,46 @@ async fn put_config(State(app): State<Arc<App>>, headers: HeaderMap, text: Strin
     if app.session_user(&headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    save_config(&app, text)
+}
+
+/// Schema, Werte und Soundkarten für das Formular der Konfiguration
+async fn get_form(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let path = app.config_path.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let schema = crate::form::server_schema();
+        let values = crate::form::to_json(&std::fs::read_to_string(path)?, &schema)?;
+        // Ohne Soundkarten (z. B. auf einem vServer) bleibt die Liste leer
+        let devices: Vec<_> = crate::input::devices().unwrap_or_default().into_iter().map(|(id, label)| serde_json::json!({"id": id, "label": label})).collect();
+        Ok(serde_json::json!({ "schema": schema, "values": values, "devices": devices }))
+    })
+    .await;
+    match result {
+        Ok(Ok(form)) => Json(form).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Formularwerte in die Konfiguration übernehmen (Kommentare bleiben erhalten) und speichern
+async fn put_form(State(app): State<Arc<App>>, headers: HeaderMap, Json(form): Json<serde_json::Value>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let path = app.config_path.clone();
+    // Neue Passwörter werden gehasht, das dauert
+    let text = tokio::task::spawn_blocking(move || crate::form::apply(&std::fs::read_to_string(path)?, &crate::form::server_schema(), &form)).await;
+    match text {
+        Ok(Ok(text)) => save_config(&app, text),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn save_config(app: &App, text: String) -> Response {
     let checked = crate::config::Config::parse(&text).and_then(|c| {
         if c.web.is_none() {
             anyhow::bail!("[web] fehlt, die Weboberfläche wäre danach nicht mehr erreichbar");

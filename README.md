@@ -1,3 +1,5 @@
+<p align="center"><img src="images/Logo-Banner-dunkel.svg" alt="BosLook" width="480"></p>
+
 # BosLook
 
 Dekodiert ZVEI-, FMS- und POCSAG-Telegramme (512/1200 Baud) aus dem Audiosignal eines
@@ -76,9 +78,11 @@ Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus versch
 Reihenfolge und der zuletzt gewählte Reiter werden im Browser gespeichert. Neue Telegramme
 in anderen Reitern werden als Zahl am Reiter angezeigt.
 
-Unter „Einstellungen" lässt sich die Konfigurationsdatei direkt bearbeiten. Beim Speichern
-wird sie geprüft; ist etwas falsch, wird nichts gespeichert und der Fehler mit Zeilenangabe
-angezeigt. „Speichern und neu starten" startet BosLook mit der neuen Konfiguration neu
+Unter „Einstellungen" lässt sich die Konfiguration in einem Formular bearbeiten. Kommentare
+in der Datei bleiben dabei erhalten. Passwörter und Tokens für Benutzer und Clients werden im
+Klartext eingegeben und nur als Hash gespeichert; ein leeres Feld lässt sie unverändert. Über
+„Als Text bearbeiten" lässt sich die Datei auch direkt bearbeiten. Beim Speichern wird die
+Konfiguration geprüft; ist etwas falsch, wird nichts gespeichert und der Fehler angezeigt. „Speichern und neu starten" startet BosLook mit der neuen Konfiguration neu
 (danach ist eine neue Anmeldung nötig). Jeder angemeldete Benutzer kann die Konfiguration
 einschließlich Passwort-Hashes und Tokens sehen und ändern.
 
@@ -115,8 +119,9 @@ Ein BosLook mit angeschlossenem Empfänger (Client) kann seine Telegramme an ein
 BosLook (Server, z. B. auf einem vServer) weiterleiten. Die Verbindung läuft als WebSocket
 über den Webport des Servers, bei TLS also verschlüsselt.
 
-1. Token ausdenken (lang und zufällig) und mit `boslook hash-password` den Hash erzeugen.
-2. Server: `[[client]]` mit Name und `token_hash` eintragen (siehe `boslook.example.toml`).
+1. Token ausdenken (lang und zufällig).
+2. Server: unter „Einstellungen" → „Clients" Name und Token eintragen (oder in der Datei
+   `[[client]]` mit Name und `token_hash` von `boslook hash-password`, siehe `boslook.example.toml`).
 3. Client: `[forward]` mit Server-Adresse, Name und Token eintragen
    (siehe `boslook-client.example.toml`). Bei `tls = "self-signed"` die Zertifikatsdatei
    des Servers zum Client kopieren und als `cert` angeben.
@@ -139,7 +144,8 @@ den Filtern):
 
 Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). Beim ersten
 Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
-„Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten. Die Spaltenbreiten
+„Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten, beides als Formular
+wie in der Weboberfläche oder als Text. Die Spaltenbreiten
 der Tabelle lassen sich (wie in der Weboberfläche) mit der Maus ziehen und bleiben gespeichert.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter

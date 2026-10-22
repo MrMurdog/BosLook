@@ -7,6 +7,7 @@
 mod client;
 mod config;
 mod events;
+mod form;
 
 use boslook::telegram::{Kind, Telegram};
 use clap::{Parser, Subcommand};
@@ -17,6 +18,8 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 
+/// Rot des Logos
+const RED: Color32 = Color32::from_rgb(0xdd, 0x31, 0x27);
 /// So viele Telegramme je Quelle bleiben in der Anzeige
 const MAX_ROWS: usize = 1000;
 
@@ -70,10 +73,10 @@ struct App {
     unread: HashMap<String, usize>,
     active: Option<String>,
     view: View,
-    desktop_text: String,
-    desktop_msg: String,
-    server_text: String,
-    server_msg: String,
+    desktop: Editor,
+    server: Editor,
+    /// Anfrage an den Server läuft, nicht nochmal laden
+    server_loading: bool,
     tray: Option<tray_icon::TrayIcon>,
     tray_rx: mpsc::Receiver<TrayAction>,
     quit: bool,
@@ -99,10 +102,9 @@ impl App {
             unread: HashMap::new(),
             active: None,
             view: View::Telegrams,
-            desktop_text: String::new(),
-            desktop_msg: String::new(),
-            server_text: String::new(),
-            server_msg: String::new(),
+            desktop: Editor::default(),
+            server: Editor::default(),
+            server_loading: false,
             tray,
             tray_rx,
             quit: false,
@@ -110,8 +112,8 @@ impl App {
         if !std::path::Path::new(&app.config_path).exists() {
             let _ = std::fs::write(&app.config_path, config::TEMPLATE);
         }
-        app.desktop_text = std::fs::read_to_string(&app.config_path).unwrap_or_default();
-        match DesktopConfig::parse(&app.desktop_text) {
+        app.load_desktop();
+        match DesktopConfig::parse(&std::fs::read_to_string(&app.config_path).unwrap_or_default()) {
             Ok(c) if c.server.password != "ERSETZEN" => match events::Events::new(&c.events, c.repeat) {
                 Ok(events) => {
                     let ctx = ctx.clone();
@@ -128,7 +130,34 @@ impl App {
     fn open_settings(&mut self, msg: String) {
         self.status = "nicht verbunden".into();
         self.view = View::Desktop;
-        self.desktop_msg = msg;
+        self.desktop.msg = msg;
+    }
+
+    fn load_desktop(&mut self) {
+        let text = std::fs::read_to_string(&self.config_path).unwrap_or_default();
+        let schema = serde_json::to_value(config::schema()).expect("Schema");
+        match boslook::form::to_json(&text, &config::schema()) {
+            Ok(values) if !self.desktop.text_mode => self.desktop.form = Some(form::Form::new(schema, values, Vec::new())),
+            Ok(_) => {}
+            Err(e) => {
+                self.desktop.text_mode = true;
+                self.desktop.msg = format!("Als Formular nicht lesbar, bitte als Text korrigieren: {e:#}");
+            }
+        }
+        self.desktop.set_text(text);
+    }
+
+    /// Formular bzw. Text in die Datei übernehmen
+    fn save_desktop(&mut self) -> anyhow::Result<()> {
+        let text = match &self.desktop.form {
+            Some(form) if !self.desktop.text_mode => {
+                boslook::form::apply(&std::fs::read_to_string(&self.config_path)?, &config::schema(), &form.values)?
+            }
+            _ => self.desktop.text.clone(),
+        };
+        DesktopConfig::parse(&text)?;
+        std::fs::write(&self.config_path, text)?;
+        Ok(())
     }
 
     fn receive(&mut self) {
@@ -160,9 +189,24 @@ impl App {
                     rows.push_front(t);
                     rows.truncate(MAX_ROWS);
                 }
-                FromClient::ServerConfig(Ok(text)) => (self.server_text, self.server_msg) = (text, String::new()),
-                FromClient::ServerConfig(Err(e)) | FromClient::Saved(Err(e)) => self.server_msg = e,
-                FromClient::Saved(Ok(msg)) => self.server_msg = msg,
+                FromClient::ServerConfig(Ok(text)) => {
+                    self.server_loading = false;
+                    self.server.set_text(text);
+                }
+                FromClient::ServerForm(Ok(values)) => {
+                    self.server_loading = false;
+                    self.server.form = Some(form::Form::from_server(values));
+                }
+                FromClient::ServerConfig(Err(e)) | FromClient::ServerForm(Err(e)) => {
+                    self.server_loading = false;
+                    self.server.msg = e;
+                }
+                FromClient::Saved(Err(e)) => self.server.msg = e,
+                FromClient::Saved(Ok(msg)) => {
+                    // Neu laden, damit Listeneinträge und Passwort-Hashes zum gespeicherten Stand passen
+                    self.server.msg = msg;
+                    self.server.clear();
+                }
             }
         }
     }
@@ -243,36 +287,44 @@ impl App {
     }
 
     fn desktop_settings(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let save = ui.button("Speichern").clicked();
-            let restart = ui.button("Speichern und neu starten").clicked();
-            if save || restart {
-                match DesktopConfig::parse(&self.desktop_text).and_then(|_| Ok(std::fs::write(&self.config_path, &self.desktop_text)?)) {
-                    Ok(()) if restart => boslook::serve::restart(),
-                    Ok(()) => self.desktop_msg = "Gespeichert. Wirksam nach einem Neustart.".into(),
-                    Err(e) => self.desktop_msg = format!("Nicht gespeichert: {e:#}"),
-                }
+        match self.desktop.toolbar(ui, true) {
+            Some(Action::Reload) => {
+                self.desktop.clear();
+                self.load_desktop();
             }
-        });
-        ui.label(RichText::new(&self.desktop_msg).monospace());
-        editor(ui, &mut self.desktop_text);
+            Some(Action::Save { restart }) => match self.save_desktop() {
+                Ok(()) if restart => boslook::serve::restart(),
+                Ok(()) => {
+                    self.load_desktop();
+                    self.desktop.msg = "Gespeichert. Wirksam nach einem Neustart.".into();
+                }
+                Err(e) => self.desktop.msg = format!("Nicht gespeichert: {e:#}"),
+            },
+            None => {}
+        }
+        if !self.desktop.loaded() {
+            self.load_desktop();
+        }
+        self.desktop.show(ui);
     }
 
     fn server_settings(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.connected, |ui| {
-                if ui.button("Neu laden").clicked() {
-                    self.send(ToClient::LoadServerConfig);
-                }
-                for (label, restart) in [("Speichern", false), ("Speichern und neu starten", true)] {
-                    if ui.button(label).clicked() {
-                        self.send(ToClient::SaveServerConfig { text: self.server_text.clone(), restart });
-                    }
-                }
-            });
-        });
-        ui.label(RichText::new(&self.server_msg).monospace());
-        editor(ui, &mut self.server_text);
+        match self.server.toolbar(ui, self.connected) {
+            Some(Action::Reload) => self.server.clear(),
+            Some(Action::Save { restart }) => {
+                let cmd = match &self.server.form {
+                    Some(form) if !self.server.text_mode => ToClient::SaveServerForm { values: form.values.clone(), restart },
+                    _ => ToClient::SaveServerConfig { text: self.server.text.clone(), restart },
+                };
+                self.send(cmd);
+            }
+            None => {}
+        }
+        if self.connected && !self.server.loaded() && !self.server_loading {
+            self.server_loading = true;
+            self.send(if self.server.text_mode { ToClient::LoadServerConfig } else { ToClient::LoadServerForm });
+        }
+        self.server.show(ui);
     }
 
     fn send(&mut self, cmd: ToClient) {
@@ -308,18 +360,18 @@ impl eframe::App for App {
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Bos").strong());
-                ui.heading(RichText::new("Look").strong().color(Color32::from_rgb(0xc6, 0x28, 0x28)));
+                // Blau des Logos, im dunklen Design heller für besseren Kontrast
+                let blue = if ui.visuals().dark_mode { Color32::from_rgb(0x4a, 0x9b, 0xe0) } else { Color32::from_rgb(0x00, 0x57, 0x95) };
+                ui.heading(RichText::new("Look").strong().color(blue));
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Telegrams, "Telegramme");
                 ui.selectable_value(&mut self.view, View::Desktop, "Einstellungen");
-                if ui.selectable_value(&mut self.view, View::Server, "Server-Konfiguration").clicked() && self.server_text.is_empty() {
-                    self.send(ToClient::LoadServerConfig);
-                }
+                ui.selectable_value(&mut self.view, View::Server, "Server-Konfiguration");
             });
         });
         // Statuszeile unten, damit lange Fehlermeldungen umbrechen statt die Reiter zu überdecken
         egui::Panel::bottom("status").show(ui, |ui| {
-            let color = if self.connected { Color32::from_rgb(0x43, 0xa0, 0x47) } else { Color32::from_rgb(0xc6, 0x28, 0x28) };
+            let color = if self.connected { Color32::from_rgb(0x43, 0xa0, 0x47) } else { RED };
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("●").color(color));
                 ui.label(&self.status);
@@ -333,6 +385,83 @@ impl eframe::App for App {
     }
 }
 
+enum Action {
+    Reload,
+    Save { restart: bool },
+}
+
+/// Konfiguration als Formular, umschaltbar auf Text (als Rückfallebene)
+#[derive(Default)]
+struct Editor {
+    text_mode: bool,
+    text: String,
+    /// Geladener Text, `None` = noch nicht geladen
+    original: Option<String>,
+    form: Option<form::Form>,
+    msg: String,
+}
+
+impl Editor {
+    fn set_text(&mut self, text: String) {
+        self.original = Some(text.clone());
+        self.text = text;
+    }
+
+    fn loaded(&self) -> bool {
+        if self.text_mode { self.original.is_some() } else { self.form.is_some() }
+    }
+
+    fn changed(&self) -> bool {
+        if self.text_mode { self.original.as_ref().is_some_and(|o| *o != self.text) } else { self.form.as_ref().is_some_and(form::Form::changed) }
+    }
+
+    fn clear(&mut self) {
+        self.original = None;
+        self.form = None;
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui, enabled: bool) -> Option<Action> {
+        let mut action = None;
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                if ui.button("Neu laden").clicked() {
+                    self.msg.clear();
+                    action = Some(Action::Reload);
+                }
+                for (label, restart) in [("Speichern", false), ("Speichern und neu starten", true)] {
+                    if ui.add_enabled(self.loaded(), egui::Button::new(label)).clicked() {
+                        action = Some(Action::Save { restart });
+                    }
+                }
+                let label = if self.text_mode { "Als Formular bearbeiten" } else { "Als Text bearbeiten" };
+                let toggle = ui.add_enabled(!self.changed(), egui::Button::new(label)).on_disabled_hover_text("Erst speichern oder neu laden");
+                if toggle.clicked() {
+                    self.text_mode = !self.text_mode;
+                    self.msg.clear();
+                    self.clear();
+                }
+            });
+        });
+        action
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) {
+        if !self.msg.is_empty() {
+            ui.label(RichText::new(&self.msg).monospace());
+        }
+        if !self.loaded() {
+            ui.label("lädt …");
+            return;
+        }
+        match &mut self.form {
+            Some(form) if !self.text_mode => {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| form.show(ui));
+            }
+            _ => editor(ui, &mut self.text),
+        }
+    }
+}
+
 fn editor(ui: &mut egui::Ui, text: &mut String) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add(egui::TextEdit::multiline(text).code_editor().desired_width(f32::INFINITY).desired_rows(30));
@@ -341,7 +470,7 @@ fn editor(ui: &mut egui::Ui, text: &mut String) {
 
 fn kind_color(kind: Kind) -> Color32 {
     match kind {
-        Kind::Pocsag => Color32::from_rgb(0xc6, 0x28, 0x28),
+        Kind::Pocsag => RED,
         Kind::Fms => Color32::from_rgb(0x15, 0x65, 0xc0),
         Kind::Zvei => Color32::from_rgb(0x2e, 0x7d, 0x32),
         Kind::Wetter => Color32::from_rgb(0xef, 0x6c, 0x00),
@@ -433,9 +562,9 @@ impl eframe::App for Popup {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default_margins().show(ui, |ui| {
             if self.emergency {
-                ui.label(RichText::new("NOTFALL").size(16.0).strong().color(Color32::from_rgb(0xc6, 0x28, 0x28)));
+                ui.label(RichText::new("NOTFALL").size(16.0).strong().color(RED));
             }
-            ui.label(RichText::new(&self.title).size(26.0).strong().color(Color32::from_rgb(0xc6, 0x28, 0x28)));
+            ui.label(RichText::new(&self.title).size(26.0).strong().color(RED));
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(170.0).show(ui, |ui| {
                 ui.label(RichText::new(&self.body).size(18.0));

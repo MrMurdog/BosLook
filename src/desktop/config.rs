@@ -1,4 +1,5 @@
 use anyhow::Result;
+use boslook::form::{Input, Section, SectionKind, field, match_fields, priority_field};
 use boslook::notify::Priority;
 use boslook::telegram::Kind;
 use serde::Deserialize;
@@ -54,6 +55,55 @@ impl DesktopConfig {
         crate::events::Events::new(&config.events, 0)?;
         Ok(config)
     }
+}
+
+/// Schema für das Formular der Einstellungen
+pub fn schema() -> Vec<Section> {
+    vec![
+        Section {
+            key: "",
+            title: "Allgemein",
+            help: "",
+            kind: SectionKind::Root,
+            fields: vec![
+                field("repeat", "Wiederholungen unterdrücken (s)", Input::Number)
+                    .default(60)
+                    .help("Gleiche Telegramme innerhalb dieser Sekunden nur einmal auslösen, 0 = jedes Mal"),
+            ],
+        },
+        Section {
+            key: "server",
+            title: "Server",
+            help: "",
+            kind: SectionKind::Table,
+            fields: vec![
+                field("url", "Adresse", Input::Text).required().help("Adresse der Weboberfläche, z. B. https://mein-server.de:8443"),
+                field("user", "Benutzer", Input::Text).required(),
+                field("password", "Passwort", Input::Password).required(),
+                field("cert", "Zertifikat des Servers", Input::Text).help("Nur bei tls = self-signed: Pfad zur kopierten boslook-cert.pem"),
+            ],
+        },
+        Section {
+            key: "event",
+            title: "Ereignisse",
+            help: "Lokale Aktionen bei passenden Telegrammen",
+            kind: SectionKind::List,
+            fields: [
+                vec![field("name", "Name", Input::Text).required()],
+                match_fields(),
+                vec![
+                    priority_field("normal = Systembenachrichtigung, high/emergency = Fenster im Vordergrund bis zum Quittieren"),
+                    field("sound", "Tondatei", Input::Text).help("WAV, MP3 …"),
+                    field("program", "Programm", Input::Text),
+                    field("args", "Argumente", Input::Lines)
+                        .help("Eins je Zeile; ersetzt werden {kind} {address} {sub} {message} {source}"),
+                ],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        },
+    ]
 }
 
 /// Wird beim ersten Start angelegt.

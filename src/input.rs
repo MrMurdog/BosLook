@@ -146,15 +146,24 @@ where
 
 /// Gibt die Aufnahmegeräte für die Konfiguration (`device = ...`) aus.
 pub fn list_devices() -> Result<()> {
+    for (id, description) in devices()? {
+        println!("{id}\t{description}");
+    }
+    Ok(())
+}
+
+/// Eingabegeräte als (ID, Beschreibung mit Name, Abtastrate und Standard-Markierung)
+pub fn devices() -> Result<Vec<(String, String)>> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     let default = host.default_input_device().and_then(|d| d.id().ok());
+    let mut list = Vec::new();
     for dev in host.input_devices()? {
         let id = dev.id()?;
         let name = dev.description().map(|d| d.name().to_string()).unwrap_or_default();
         let rate = dev.default_input_config().map(|c| format!("{} Hz", c.sample_rate())).unwrap_or_default();
         let mark = if Some(&id) == default.as_ref() { " (Standard)" } else { "" };
-        println!("{id}\t{name}\t{rate}{mark}");
+        list.push((id.to_string(), format!("{name}\t{rate}{mark}")));
     }
-    Ok(())
+    Ok(list)
 }
