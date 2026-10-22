@@ -2,7 +2,7 @@
 
 Dekodiert ZVEI-, FMS- und POCSAG-Telegramme (512/1200 Baud) aus dem Audiosignal eines
 Funkempfängers, speichert sie in SQLite und zeigt sie live in einer Weboberfläche an,
-mit einer eigenen Tabelle pro Quelle. Läuft unter Linux und Windows.
+mit einem eigenen Reiter pro Quelle. Läuft unter Linux und Windows.
 
 > Das Abhören und Auswerten von BOS-Funk ist nur Berechtigten erlaubt.
 
@@ -69,6 +69,23 @@ Filter arbeiten mit regulären Ausdrücken auf `address`, `sub` und `message`, o
 eingeschränkt auf `kind`. Ein Telegramm wird verworfen, wenn ein Filter mit
 `exclude = true` passt. Gibt es Filter ohne `exclude`, muss mindestens einer davon passen.
 Beispiele stehen in `boslook.example.toml`.
+
+### Weboberfläche
+
+Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus verschieben; die
+Reihenfolge und der zuletzt gewählte Reiter werden im Browser gespeichert. Neue Telegramme
+in anderen Reitern werden als Zahl am Reiter angezeigt.
+
+## Benachrichtigungen
+
+`[[notifier]]` legt ein Ziel fest (Telegram, E-Mail oder Pushover), `[[alarm]]` eine Regel mit
+denselben Feldern wie ein Filter und der Liste `notify` mit den Namen der Ziele. Passen mehrere
+Regeln auf ein Telegramm, bekommt jedes Ziel trotzdem nur eine Nachricht. Beispiele stehen in
+`boslook.example.toml`.
+
+```sh
+boslook test-notify            # Testnachricht an alle Ziele senden
+```
 
 ## Weiterleitung an einen Server
 

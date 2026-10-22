@@ -4,6 +4,7 @@ mod decoder;
 mod filter;
 mod forward;
 mod input;
+mod notify;
 mod serve;
 mod telegram;
 mod web;
@@ -36,6 +37,11 @@ enum Command {
         #[arg(short, long, default_value = "boslook.toml")]
         config: String,
     },
+    /// Testnachricht an alle konfigurierten Benachrichtigungsziele senden
+    TestNotify {
+        #[arg(short, long, default_value = "boslook.toml")]
+        config: String,
+    },
     /// Aufnahmegeräte (Soundkarten) auflisten
     Devices,
     /// Passwort-Hash für die Konfiguration erzeugen (Passwort wird von stdin gelesen)
@@ -46,9 +52,24 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Decode { file, decoders, pocsag } => decode(&file, &decoders, pocsag),
         Command::Serve { config } => tokio::runtime::Runtime::new()?.block_on(serve::run(&config)),
+        Command::TestNotify { config } => test_notify(&config),
         Command::Devices => input::list_devices(),
         Command::HashPassword => hash_password(),
     }
+}
+
+fn test_notify(config: &str) -> Result<()> {
+    let config = config::Config::load(config)?;
+    if config.notifiers.is_empty() {
+        anyhow::bail!("Keine [[notifier]] konfiguriert");
+    }
+    for n in &config.notifiers {
+        match notify::send(&n.target, "BosLook Test", "Testnachricht von BosLook") {
+            Ok(()) => println!("{}: gesendet", n.name),
+            Err(e) => println!("{}: Fehler: {e:#}", n.name),
+        }
+    }
+    Ok(())
 }
 
 fn hash_password() -> Result<()> {

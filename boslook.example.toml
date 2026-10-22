@@ -58,3 +58,33 @@ address = "^18599"
 name = "Probealarme ausblenden"
 message = "(?i)probealarm"
 exclude = true
+
+# Benachrichtigungsziele. Testen mit: boslook test-notify
+[[notifier]]
+name = "Handy"
+type = "pushover"
+token = "ERSETZEN"      # API-Token der Pushover-Anwendung
+user = "ERSETZEN"       # User- oder Gruppen-Key
+
+[[notifier]]
+name = "Leitstelle"
+type = "telegram"
+bot_token = "ERSETZEN"  # von @BotFather
+chat_id = "ERSETZEN"    # Chat- oder Gruppen-ID
+
+[[notifier]]
+name = "Mail"
+type = "email"
+server = "smtp.example.org"
+security = "starttls"   # "starttls" (Port 587), "tls" (Port 465) oder "none" (Port 25)
+username = "boslook@example.org"
+password = "ERSETZEN"
+from = "BosLook <boslook@example.org>"
+to = ["ich@example.org"]
+
+# Alarmregeln: Felder wie bei den Filtern, notify = Namen der Ziele
+[[alarm]]
+name = "Eigene Schleife"
+kind = "pocsag"
+address = "^18599"
+notify = ["Handy", "Leitstelle"]

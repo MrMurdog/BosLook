@@ -4,6 +4,7 @@ use crate::config::{Config, InputConfig, Source, Tls};
 use crate::db::Db;
 use crate::decoder::Bank;
 use crate::filter::Filters;
+use crate::notify::Notify;
 use crate::telegram::{Decoded, Telegram};
 use crate::web::{self, App, Settings};
 use crate::{forward, input};
@@ -38,6 +39,7 @@ pub async fn run(config_path: &str) -> Result<()> {
     }
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let filters = Arc::new(Filters::new(&config.filters)?);
+    let notify = Notify::new(&config.alarms, config.notifiers)?;
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);
@@ -76,6 +78,7 @@ pub async fn run(config_path: &str) -> Result<()> {
                 Err(e) => eprintln!("Datenbank: {e:#}"),
             }
             println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
+            notify.handle(&t);
             let _ = store.live.send(t.clone());
             if let Some(forward) = &forward {
                 let _ = forward.send(t).await;

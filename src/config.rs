@@ -1,4 +1,5 @@
 use crate::filter::FilterConfig;
+use crate::notify::{AlarmConfig, NotifierConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
@@ -20,6 +21,10 @@ pub struct Config {
     pub inputs: Vec<InputConfig>,
     #[serde(default, rename = "filter")]
     pub filters: Vec<FilterConfig>,
+    #[serde(default, rename = "notifier")]
+    pub notifiers: Vec<NotifierConfig>,
+    #[serde(default, rename = "alarm")]
+    pub alarms: Vec<AlarmConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +139,8 @@ mod tests {
         assert_eq!(c.inputs[1].pocsag, crate::decoder::pocsag::Format::Auto);
         assert_eq!(c.filters.len(), 2);
         assert_eq!(c.clients[0].name, "Zuhause");
+        assert_eq!(c.notifiers.len(), 3);
+        assert_eq!(c.alarms[0].notify, ["Handy", "Leitstelle"]);
     }
 
     #[test]

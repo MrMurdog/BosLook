@@ -24,10 +24,14 @@
   #status.off::before { content: "●"; color: var(--accent); margin-right: 4px; }
   button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); align-items: start; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .panel h2 { margin: 0; padding: 10px 12px; font-size: 15px; border-bottom: 1px solid var(--line); }
-  .table { max-height: 70vh; overflow: auto; }
+  main { padding: 16px; }
+  #tabs { display: flex; gap: 4px; overflow-x: auto; }
+  #tabs button { border-radius: 8px 8px 0 0; border-bottom: none; white-space: nowrap; color: var(--muted); }
+  #tabs button.active { color: var(--text); font-weight: 600; border-color: var(--accent); border-bottom: 2px solid var(--accent); }
+  #tabs button.dragging { opacity: 0.4; }
+  #tabs .count { margin-left: 6px; padding: 0 6px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; overflow: hidden; }
+  .table { max-height: calc(100vh - 150px); overflow: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
@@ -63,12 +67,15 @@
     <span id="status" class="off">getrennt</span>
     <button id="logout">Abmelden</button>
   </header>
-  <main id="panels"><p id="empty">Noch keine Quellen vorhanden.</p></main>
+  <main>
+    <p id="empty">Noch keine Quellen vorhanden.</p>
+    <nav id="tabs"></nav>
+    <div id="panels"></div>
+  </main>
 </div>
 
 <template id="panel">
-  <section class="panel">
-    <h2></h2>
+  <section class="panel" hidden>
     <div class="table">
       <table>
         <thead><tr><th>Zeit</th><th>Art</th><th>Adresse</th><th>Sub</th><th>Meldung</th></tr></thead>
@@ -82,8 +89,18 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let socket = null;
-// Quelle -> { rows, more, oldest }
+// Quelle -> { rows, more, oldest, el, tab, unread }
 let panels = new Map();
+let active = null;
+let wanted = null;
+
+// Reihenfolge und gewählter Reiter gelten nur für diesen Browser
+function load(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
 
 function row(t, isNew) {
   const tr = document.createElement("tr");
@@ -107,14 +124,66 @@ function row(t, isNew) {
 function panel(source) {
   if (panels.has(source)) return panels.get(source);
   const el = $("panel").content.firstElementChild.cloneNode(true);
-  el.querySelector("h2").textContent = source;
-  const p = { rows: el.querySelector("tbody"), more: el.querySelector(".more"), oldest: null };
+  const tab = document.createElement("button");
+  tab.draggable = true;
+  tab.dataset.source = source;
+  tab.append(source);
+  const p = { rows: el.querySelector("tbody"), more: el.querySelector(".more"), oldest: null, el, tab, unread: 0 };
   p.more.onclick = () => loadOlder(source);
+  tab.onclick = () => select(source);
+  tab.ondragstart = (e) => {
+    e.dataTransfer.setData("text/plain", source);
+    tab.classList.add("dragging");
+  };
+  tab.ondragend = () => {
+    tab.classList.remove("dragging");
+    save("boslook.tabs", [...$("tabs").children].map((t) => t.dataset.source));
+  };
   panels.set(source, p);
   $("empty").hidden = true;
   $("panels").append(el);
+  // Gespeicherte Reihenfolge beachten, unbekannte Quellen hinten anhängen
+  const order = load("boslook.tabs", []);
+  const pos = order.indexOf(source);
+  const next = pos < 0 ? null : [...$("tabs").children].find((t) => {
+    const i = order.indexOf(t.dataset.source);
+    return i < 0 || i > pos;
+  });
+  $("tabs").insertBefore(tab, next ?? null);
+  if (!active || source === wanted) select(source);
   return p;
 }
+
+function select(source) {
+  for (const [s, p] of panels) {
+    p.el.hidden = s !== source;
+    p.tab.classList.toggle("active", s === source);
+  }
+  active = source;
+  save("boslook.active", source);
+  setUnread(panels.get(source), 0);
+}
+
+function setUnread(p, n) {
+  p.unread = n;
+  p.tab.querySelector(".count")?.remove();
+  if (n) {
+    const c = document.createElement("span");
+    c.className = "count";
+    c.textContent = n;
+    p.tab.append(c);
+  }
+}
+
+$("tabs").ondragover = (e) => {
+  e.preventDefault();
+  const dragging = $("tabs").querySelector(".dragging");
+  const target = e.target.closest("#tabs button");
+  if (!dragging || !target || target === dragging) return;
+  const box = target.getBoundingClientRect();
+  $("tabs").insertBefore(dragging, e.clientX < box.left + box.width / 2 ? target : target.nextSibling);
+};
+$("tabs").ondrop = (e) => e.preventDefault();
 
 async function loadOlder(source) {
   const p = panel(source);
@@ -134,7 +203,9 @@ function connect() {
   socket.onopen = () => { $("status").className = "on"; $("status").textContent = "live"; };
   socket.onmessage = (e) => {
     const t = JSON.parse(e.data);
-    panel(t.source).rows.prepend(row(t, true));
+    const p = panel(t.source);
+    p.rows.prepend(row(t, true));
+    if (t.source !== active) setUnread(p, p.unread + 1);
   };
   socket.onclose = () => {
     $("status").className = "off"; $("status").textContent = "getrennt";
@@ -149,8 +220,9 @@ function showLogin() {
 
 async function showApp() {
   $("login").hidden = true; $("app").hidden = false;
-  for (const el of $("panels").querySelectorAll(".panel")) el.remove();
-  panels.clear(); $("empty").hidden = false;
+  $("panels").innerHTML = ""; $("tabs").innerHTML = "";
+  panels.clear(); active = null; $("empty").hidden = false;
+  wanted = load("boslook.active", null);
   const res = await fetch("/api/sources");
   if (res.status === 401) return showLogin();
   const sources = await res.json();

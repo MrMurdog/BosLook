@@ -20,7 +20,7 @@ pub struct FilterConfig {
     pub exclude: bool,
 }
 
-struct Filter {
+pub struct Filter {
     kind: Option<Kind>,
     address: Option<Regex>,
     sub: Option<Regex>,
@@ -29,7 +29,24 @@ struct Filter {
 }
 
 impl Filter {
-    fn matches(&self, d: &Decoded) -> bool {
+    pub fn new(c: &FilterConfig) -> Result<Filter> {
+        let re = |pattern: &Option<String>| -> Result<Option<Regex>> {
+            pattern
+                .as_deref()
+                .map(Regex::new)
+                .transpose()
+                .with_context(|| format!("Filter '{}'", c.name))
+        };
+        Ok(Filter {
+            kind: c.kind,
+            address: re(&c.address)?,
+            sub: re(&c.sub)?,
+            message: re(&c.message)?,
+            exclude: c.exclude,
+        })
+    }
+
+    pub fn matches(&self, d: &Decoded) -> bool {
         let field = |re: &Option<Regex>, value: &str| re.as_ref().is_none_or(|re| re.is_match(value));
         self.kind.is_none_or(|k| k == d.kind)
             && field(&self.address, &d.address)
@@ -42,24 +59,7 @@ pub struct Filters(Vec<Filter>);
 
 impl Filters {
     pub fn new(configs: &[FilterConfig]) -> Result<Filters> {
-        let mut filters = Vec::new();
-        for c in configs {
-            let re = |pattern: &Option<String>| -> Result<Option<Regex>> {
-                pattern
-                    .as_deref()
-                    .map(Regex::new)
-                    .transpose()
-                    .with_context(|| format!("Filter '{}'", c.name))
-            };
-            filters.push(Filter {
-                kind: c.kind,
-                address: re(&c.address)?,
-                sub: re(&c.sub)?,
-                message: re(&c.message)?,
-                exclude: c.exclude,
-            });
-        }
-        Ok(Filters(filters))
+        Ok(Filters(configs.iter().map(Filter::new).collect::<Result<_>>()?))
     }
 
     pub fn allows(&self, d: &Decoded) -> bool {
