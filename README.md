@@ -36,6 +36,18 @@ boslook hash-password          # Passwort eingeben, Hash in boslook.toml eintrag
 boslook serve                  # oder: boslook serve -c /pfad/zur/config.toml
 ```
 
+### Datenbank
+
+Standard ist eine SQLite-Datei (`database = "boslook.db"`). Für MySQL/MariaDB oder
+PostgreSQL wird stattdessen eine Adresse eingetragen:
+
+```toml
+database = "mysql://boslook:passwort@localhost/boslook"
+database = "postgres://boslook:passwort@localhost/boslook"
+```
+
+Datenbank und Benutzer müssen vorher angelegt sein, die Tabellen legt BosLook beim Start an.
+
 ### Soundkarte
 
 ```sh
@@ -76,7 +88,8 @@ Beispiele stehen in `boslook.example.toml`.
 
 Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus verschieben; die
 Reihenfolge und der zuletzt gewählte Reiter werden im Browser gespeichert. Neue Telegramme
-in anderen Reitern werden als Zahl am Reiter angezeigt.
+in anderen Reitern werden als Zahl am Reiter angezeigt. Unter „Spalten" lassen sich Spalten
+ein- und ausblenden, die Breiten mit der Maus ziehen; beides merkt sich der Browser.
 
 Unter „Einstellungen" lässt sich die Konfiguration in einem Formular bearbeiten. Kommentare
 in der Datei bleiben dabei erhalten. Passwörter und Tokens für Benutzer und Clients werden im
@@ -85,6 +98,28 @@ Klartext eingegeben und nur als Hash gespeichert; ein leeres Feld lässt sie unv
 Konfiguration geprüft; ist etwas falsch, wird nichts gespeichert und der Fehler angezeigt. „Speichern und neu starten" startet BosLook mit der neuen Konfiguration neu
 (danach ist eine neue Anmeldung nötig). Jeder angemeldete Benutzer kann die Konfiguration
 einschließlich Passwort-Hashes und Tokens sehen und ändern.
+
+## Beschreibungen
+
+Zu POCSAG-Adressen lassen sich Ort, Kurz- und Langbeschreibung hinterlegen. Sie werden beim
+Empfang nachgeschlagen, mit dem Telegramm gespeichert und in eigenen Spalten angezeigt. Eine
+Adresse ist RIC und Sub (`1234567a`, Sub `a`–`d`) oder RIC mit `*` für alle Subs; ein Eintrag
+mit passender Sub hat Vorrang vor `*`. Filter und Alarmregeln können mit `ort`, `kurz` und
+`lang` auch auf diese Felder prüfen.
+
+Bearbeitet werden die Beschreibungen über „Beschreibungen" in der Weboberfläche (eigener Tab)
+oder in der Desktop-App (eigenes Fenster). Die Suche arbeitet mit regulären Ausdrücken über
+alle Spalten, z. B. `^19388` oder `FW|RD`. Änderungen werden beim Verlassen eines Felds
+gespeichert.
+
+Import als CSV:
+
+- eigenes Format mit Kopfzeile `adresse;ort;kurzbeschreibung;langbeschreibung` (wie beim Export)
+- BosMon-Format ohne Kopfzeile: `"1234567*","Ort","Kurz","Lang"`
+
+Trennzeichen (`;` oder `,`) und Zeichensatz (UTF-8 oder Windows-1252) werden erkannt, doppelt
+kodierte Umlaute („FÃ¼hrung") repariert. Vorhandene Adressen werden überschrieben, mit
+„Vorher alles löschen" wird das Adressbuch ersetzt.
 
 ## Benachrichtigungen
 
@@ -101,6 +136,11 @@ Gleiche Telegramme werden innerhalb von 60 Sekunden nur einmal gemeldet, weil Al
 wiederholt gesendet werden (`notify_repeat`). Mit `priority = "high"` oder `"emergency"` in der
 Alarmregel kommen Pushover-Nachrichten auch bei „Nicht stören" bzw. so lange, bis sie
 bestätigt werden.
+
+Titel und Text der Nachricht lassen sich pro Alarmregel mit `title` und `text` festlegen.
+Platzhalter: `{kind}` `{address}` `{sub}` `{message}` `{ort}` `{kurz}` `{lang}` `{source}`
+`{time}` `{alarm}` (Namen der passenden Regeln). Ohne Vorlage ist der Titel der Name der
+Regel und der Text enthält Art, Adresse, Meldung, Ort und Kurzbeschreibung.
 
 ## Wetterwarnungen
 
@@ -139,14 +179,16 @@ den Filtern):
 - `priority = "normal"`: Systembenachrichtigung
 - `priority = "high"` / `"emergency"`: Fenster im Vordergrund, bis es quittiert wird
 - `sound`: Tondatei abspielen
-- `program` und `args`: Programm starten, in `args` werden `{kind}`, `{address}`, `{sub}`,
-  `{message}` und `{source}` ersetzt
+- `program` und `args`: Programm starten, in `args` werden die Platzhalter wie bei den
+  Alarmregeln ersetzt (`{kind}` ist dabei großgeschrieben, z. B. `POCSAG`)
+- `title` und `text`: Vorlagen für Benachrichtigung bzw. Alarmfenster
 
 Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). Beim ersten
 Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
 „Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten, beides als Formular
-wie in der Weboberfläche oder als Text. Die Spaltenbreiten
-der Tabelle lassen sich (wie in der Weboberfläche) mit der Maus ziehen und bleiben gespeichert.
+wie in der Weboberfläche oder als Text. „Beschreibungen" öffnet den Editor für das
+Adressbuch in einem eigenen Fenster. Spalten lassen sich unter „Spalten" ein- und ausblenden
+und (wie in der Weboberfläche) mit der Maus breiter ziehen; beides bleibt gespeichert.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter
 Linux braucht das eine Arbeitsumgebung mit Infobereich (KDE, XFCE, GNOME mit

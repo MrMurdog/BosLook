@@ -23,7 +23,7 @@
   #status { margin-left: auto; color: var(--muted); font-size: 13px; }
   #status.on::before { content: "●"; color: #43a047; margin-right: 4px; }
   #status.off::before { content: "●"; color: var(--danger); margin-right: 4px; }
-  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button, .button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   main { padding: 16px; }
   #tabs { display: flex; gap: 4px; overflow-x: auto; }
@@ -33,17 +33,19 @@
   #tabs .count { margin-left: 6px; padding: 0 6px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; overflow: hidden; }
   .table { max-height: calc(100vh - 150px); overflow: auto; }
-  #panels { --w0: 11.5rem; --w1: 5rem; --w2: 6rem; --w3: 3.5rem; }
-  /* Meldung bekommt den Rest, mindestens 16rem; sonst scrollt die Tabelle waagerecht */
-  table { width: 100%; min-width: calc(var(--w0) + var(--w1) + var(--w2) + var(--w3) + 16rem); border-collapse: collapse; table-layout: fixed; }
+  /* Meldung bekommt den Rest, mindestens 16rem (min-width setzt columns()); sonst scrollt die Tabelle waagerecht */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; overflow: hidden; box-sizing: border-box; }
   th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
-  th:nth-child(1) { width: var(--w0); } th:nth-child(2) { width: var(--w1); } th:nth-child(3) { width: var(--w2); } th:nth-child(4) { width: var(--w3); }
   th .grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; border-right: 1px solid var(--line); touch-action: none; }
   #empty { color: var(--muted); }
   td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.addr { font-family: ui-monospace, monospace; white-space: nowrap; }
-  td.msg { word-break: break-word; }
+  td.msg, td.text { word-break: break-word; }
+  #columns { position: relative; }
+  #columns summary { list-style: none; } #columns summary::-webkit-details-marker { display: none; }
+  #columns div { position: absolute; right: 0; z-index: 2; margin-top: 4px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px #0003; white-space: nowrap; }
+  #columns label { display: block; padding: 3px 0; }
   .kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; color: #fff; }
   .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); } .kind.wetter { background: var(--wetter); }
   tr.new { background: var(--new); transition: background 3s; }
@@ -87,6 +89,8 @@
   <header>
     <h1>Bos<span>Look</span></h1>
     <span id="status" class="off">getrennt</span>
+    <details id="columns"><summary class="button">Spalten</summary><div></div></details>
+    <button id="descriptions-btn">Beschreibungen</button>
     <button id="settings-btn">Einstellungen</button>
     <button id="logout">Abmelden</button>
   </header>
@@ -112,7 +116,7 @@
   <section class="panel" hidden>
     <div class="table">
       <table>
-        <thead><tr><th>Zeit<span class="grip" data-col="0"></span></th><th>Art<span class="grip" data-col="1"></span></th><th>Adresse<span class="grip" data-col="2"></span></th><th>Sub<span class="grip" data-col="3"></span></th><th>Meldung</th></tr></thead>
+        <thead><tr></tr></thead>
         <tbody></tbody>
       </table>
       <button class="more">Ältere laden</button>
@@ -136,24 +140,75 @@ function save(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+// Spalten der Tabelle; die Meldung bekommt die restliche Breite
+const COLUMNS = [
+  { key: "time", label: "Zeit", cls: "time", width: "11.5rem" },
+  { key: "kind", label: "Art", width: "5rem" },
+  { key: "address", label: "Adresse", cls: "addr", width: "6rem" },
+  { key: "sub", label: "Sub", cls: "addr", width: "3.5rem" },
+  { key: "message", label: "Meldung", cls: "msg" },
+  { key: "ort", label: "Ort", cls: "text", width: "10rem" },
+  { key: "kurz", label: "Kurzbeschreibung", cls: "text", width: "10rem" },
+  { key: "lang", label: "Langbeschreibung", cls: "text", width: "14rem" },
+];
+// Welche Spalten sichtbar sind, gilt für alle Reiter in diesem Browser
+let hidden = load("boslook.hidden", []);
+const visible = () => COLUMNS.filter((c) => !hidden.includes(c.key));
+
 function row(t, isNew) {
   const tr = document.createElement("tr");
+  tr.telegram = t;
   if (isNew) { tr.className = "new"; setTimeout(() => tr.classList.remove("new"), 50); }
-  const time = new Date(t.time).toLocaleString("de-DE");
-  const cells = [[time, "time"], [null, ""], [t.address, "addr"], [t.sub, "addr"], [t.message, "msg"]];
-  for (const [text, cls] of cells) {
+  for (const c of visible()) {
     const td = document.createElement("td");
-    td.className = cls;
-    if (text === null) {
+    td.className = c.cls ?? "";
+    if (c.key === "kind") {
       const b = document.createElement("span");
       b.className = "kind " + t.kind;
       b.textContent = t.kind.toUpperCase();
       td.append(b);
-    } else td.textContent = text;
+    } else td.textContent = c.key === "time" ? new Date(t.time).toLocaleString("de-DE") : t[c.key] ?? "";
     tr.append(td);
   }
   return tr;
 }
+
+// Kopfzeile aller Tabellen neu aufbauen und vorhandene Zeilen neu zeichnen
+function columns() {
+  for (const p of panels.values()) {
+    const head = p.el.querySelector("thead tr");
+    head.innerHTML = "";
+    for (const c of visible()) {
+      const th = document.createElement("th");
+      th.textContent = c.label;
+      if (c.width) {
+        th.style.width = widths[c.key] ? widths[c.key] + "px" : c.width;
+        const grip = document.createElement("span");
+        grip.className = "grip"; grip.dataset.col = c.key;
+        th.append(grip);
+      }
+      head.append(th);
+    }
+    for (const tr of [...p.rows.children]) tr.replaceWith(row(tr.telegram, false));
+  }
+  applyWidths();
+}
+
+const chooser = $("columns").querySelector("div");
+for (const c of COLUMNS) {
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.checked = !hidden.includes(c.key);
+  box.onchange = () => {
+    hidden = COLUMNS.filter((x, i) => !chooser.querySelectorAll("input")[i].checked).map((x) => x.key);
+    save("boslook.hidden", hidden);
+    columns();
+  };
+  const label = document.createElement("label");
+  label.append(box, " " + c.label);
+  chooser.append(label);
+}
+document.addEventListener("click", (e) => { if (!$("columns").contains(e.target)) $("columns").open = false; });
+$("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
 
 function panel(source) {
   if (panels.has(source)) return panels.get(source);
@@ -176,6 +231,7 @@ function panel(source) {
   panels.set(source, p);
   $("empty").hidden = true;
   $("panels").append(el);
+  columns();
   // Gespeicherte Reihenfolge beachten, unbekannte Quellen hinten anhängen
   const order = load("boslook.tabs", []);
   const pos = order.indexOf(source);
@@ -221,10 +277,19 @@ $("tabs").ondrop = (e) => e.preventDefault();
 
 // Spaltenbreiten per Ziehen am rechten Rand der Überschrift; gelten für alle Reiter in diesem Browser
 const widths = load("boslook.widths", {});
+// Bis 0.1.4 waren die Breiten nach Spaltennummer gespeichert
+["time", "kind", "address", "sub"].forEach((key, i) => { if (widths[i]) { widths[key] ??= widths[i]; delete widths[i]; } });
 function applyWidths() {
-  for (const [col, w] of Object.entries(widths)) $("panels").style.setProperty("--w" + col, w + "px");
+  for (const p of panels.values()) {
+    const fixed = [];
+    for (const grip of p.el.querySelectorAll(".grip")) {
+      if (widths[grip.dataset.col]) grip.parentElement.style.width = widths[grip.dataset.col] + "px";
+      fixed.push(grip.parentElement.style.width);
+    }
+    if (!hidden.includes("message")) fixed.push("16rem");
+    p.el.querySelector("table").style.minWidth = `calc(${fixed.join(" + ") || "0px"})`;
+  }
 }
-applyWidths();
 $("panels").onpointerdown = (e) => {
   const grip = e.target.closest(".grip");
   if (!grip) return;
@@ -434,7 +499,7 @@ function input(f, obj) {
     }
     return wrap;
   }
-  if (type === "lines") {
+  if (type === "lines" || type === "multiline") {
     const e = el("textarea"); e.rows = 3; e.value = Array.isArray(value) ? value.join("\n") : value ?? "";
     e.oninput = () => set(e.value);
     return e;

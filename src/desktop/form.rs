@@ -185,7 +185,7 @@ impl Ctx<'_> {
                     }
                 });
             }
-            "lines" => {
+            "lines" | "multiline" => {
                 let mut text = match &*value {
                     Value::Array(a) => a.iter().map(str).collect::<Vec<_>>().join("\n"),
                     v => str(v).to_string(),

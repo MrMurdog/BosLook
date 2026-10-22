@@ -1,5 +1,5 @@
 use anyhow::Result;
-use boslook::form::{Input, Section, SectionKind, field, match_fields, priority_field};
+use boslook::form::{Input, Section, SectionKind, TEMPLATE_HELP, field, match_fields, priority_field, template_fields};
 use boslook::notify::Priority;
 use boslook::telegram::Kind;
 use serde::Deserialize;
@@ -34,15 +34,21 @@ pub struct EventConfig {
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,
+    pub ort: Option<String>,
+    pub kurz: Option<String>,
+    pub lang: Option<String>,
     /// normal = Systembenachrichtigung, high/emergency = Popup-Fenster im Vordergrund
     #[serde(default)]
     pub priority: Priority,
     /// Tondatei (WAV, MP3, …)
     pub sound: Option<String>,
-    /// Programm, das gestartet wird; in `args` werden {kind} {address} {sub} {message} {source} ersetzt
+    /// Programm, das gestartet wird; in `args` werden die Platzhalter ersetzt (siehe `notify::fill`)
     pub program: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Vorlagen für Benachrichtigung bzw. Fenster
+    pub title: Option<String>,
+    pub text: Option<String>,
 }
 
 fn default_repeat() -> u64 {
@@ -95,9 +101,11 @@ pub fn schema() -> Vec<Section> {
                     priority_field("normal = Systembenachrichtigung, high/emergency = Fenster im Vordergrund bis zum Quittieren"),
                     field("sound", "Tondatei", Input::Text).help("WAV, MP3 …"),
                     field("program", "Programm", Input::Text),
-                    field("args", "Argumente", Input::Lines)
-                        .help("Eins je Zeile; ersetzt werden {kind} {address} {sub} {message} {source}"),
+                    field("args", "Argumente", Input::Lines).help(
+                        "Eins je Zeile; Platzhalter: {kind} {address} {sub} {message} {ort} {kurz} {lang} {source} {time} {alarm}",
+                    ),
                 ],
+                template_fields("Benachrichtigung bzw. Fenster; leer = Namen der Ereignisse ({alarm})", TEMPLATE_HELP),
             ]
             .into_iter()
             .flatten()
@@ -120,7 +128,8 @@ password = "ERSETZEN"
 # hierher kopieren. Dann wird genau dieses Zertifikat akzeptiert.
 # cert = "server-cert.pem"
 
-# Ereignisse: Felder wie bei den Filtern (kind, address, sub, message als reguläre Ausdrücke).
+# Ereignisse: Felder wie bei den Filtern (kind, address, sub, message, ort, kurz, lang als
+# reguläre Ausdrücke). title und text sind Vorlagen mit Platzhaltern wie {ort} oder {message}.
 # priority = "normal" zeigt eine Systembenachrichtigung, "high" und "emergency" ein Fenster
 # im Vordergrund, das bleibt, bis man es quittiert.
 [[event]]

@@ -4,7 +4,7 @@
 //! die bei passenden Telegrammen die genannten Ziele benachrichtigt.
 
 use crate::filter::{Filter, FilterConfig};
-use crate::telegram::{Decoded, Kind, Telegram};
+use crate::telegram::{Kind, Telegram};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -66,10 +66,16 @@ pub struct AlarmConfig {
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,
+    pub ort: Option<String>,
+    pub kurz: Option<String>,
+    pub lang: Option<String>,
     /// Namen der `[[notifier]]`, die benachrichtigt werden
     pub notify: Vec<String>,
     #[serde(default)]
     pub priority: Priority,
+    /// Vorlagen mit Platzhaltern (siehe [`fill`]); ohne: Namen der Regeln bzw. [`text`]
+    pub title: Option<String>,
+    pub text: Option<String>,
 }
 
 struct Alarm {
@@ -77,6 +83,8 @@ struct Alarm {
     filter: Filter,
     targets: Vec<usize>,
     priority: Priority,
+    title: Option<String>,
+    text: Option<String>,
 }
 
 /// Prüft Telegramme gegen die Alarmregeln und gibt Nachrichten an die Ziele weiter.
@@ -131,8 +139,8 @@ impl Notify {
         if self.repeats.is_repeat(t, Instant::now()) {
             return;
         }
-        for (target, title, priority) in targets(&self.alarms, t) {
-            let _ = self.senders[target].send((title, text(t), priority));
+        for (target, title, body, priority) in targets(&self.alarms, t) {
+            let _ = self.senders[target].send((title, body, priority));
         }
     }
 }
@@ -149,6 +157,9 @@ fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
         address: a.address.clone(),
         sub: a.sub.clone(),
         message: a.message.clone(),
+        ort: a.ort.clone(),
+        kurz: a.kurz.clone(),
+        lang: a.lang.clone(),
         exclude: false,
     })?;
     let targets = a
@@ -164,36 +175,82 @@ fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
     if targets.is_empty() {
         bail!("Alarm '{}': notify ist leer", a.name);
     }
-    Ok(Alarm { name: a.name.clone(), filter, targets, priority: a.priority })
+    Ok(Alarm { name: a.name.clone(), filter, targets, priority: a.priority, title: a.title.clone(), text: a.text.clone() })
 }
 
-/// Welche Ziele mit welchem Titel benachrichtigt werden. Passen mehrere Regeln auf dasselbe
-/// Ziel, gibt es trotzdem nur eine Nachricht (mit der höchsten Priorität).
-fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String, Priority)> {
-    let d = Decoded { kind: t.kind, address: t.address.clone(), sub: t.sub.clone(), message: t.message.clone() };
-    let mut out: Vec<(usize, Vec<&str>, Priority)> = Vec::new();
-    for a in alarms.iter().filter(|a| a.filter.matches(&d)) {
+/// Welche Ziele mit welchem Titel und Text benachrichtigt werden. Passen mehrere Regeln auf
+/// dasselbe Ziel, gibt es trotzdem nur eine Nachricht (mit der höchsten Priorität und den
+/// Vorlagen der ersten passenden Regel).
+fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String, String, Priority)> {
+    let mut out: Vec<(usize, Vec<&Alarm>, Priority)> = Vec::new();
+    for a in alarms.iter().filter(|a| a.filter.matches(t)) {
         for &target in &a.targets {
             match out.iter_mut().find(|(i, _, _)| *i == target) {
-                Some((_, names, priority)) => {
-                    names.push(&a.name);
+                Some((_, matched, priority)) => {
+                    matched.push(a);
                     *priority = (*priority).max(a.priority);
                 }
-                None => out.push((target, vec![&a.name], a.priority)),
+                None => out.push((target, vec![a], a.priority)),
             }
         }
     }
-    out.into_iter().map(|(i, names, priority)| (i, names.join(", "), priority)).collect()
+    out.into_iter()
+        .map(|(i, matched, priority)| {
+            let names = matched.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+            let first = matched[0];
+            let title = fill(first.title.as_deref().unwrap_or("{alarm}"), t, &names);
+            let body = first.text.as_deref().map_or_else(|| text(t), |template| fill(template, t, &names));
+            (i, title, body, priority)
+        })
+        .collect()
 }
 
+/// Platzhalter für Vorlagen (Benachrichtigungen, Desktop-Ereignisse), für Hilfetexte
+pub const PLACEHOLDERS: &str = "{kind} {address} {sub} {message} {ort} {kurz} {lang} {source} {time} {alarm}";
+
+/// Ersetzt die Platzhalter aus [`PLACEHOLDERS`]; `alarm` sind die Namen der passenden Regeln.
+pub fn fill(template: &str, t: &Telegram, alarm: &str) -> String {
+    let mut out = String::with_capacity(template.len() + 64);
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let end = rest.find('}').map_or(0, |e| e + 1);
+        let value = match &rest[..end] {
+            "{kind}" => t.kind.as_str().to_uppercase(),
+            "{address}" => t.address.clone(),
+            "{sub}" => t.sub.clone(),
+            "{message}" => t.message.clone(),
+            "{ort}" => t.ort.clone(),
+            "{kurz}" => t.kurz.clone(),
+            "{lang}" => t.lang.clone(),
+            "{source}" => t.source.clone(),
+            "{time}" => t.time.format("%d.%m.%Y %H:%M:%S").to_string(),
+            "{alarm}" => alarm.to_string(),
+            _ => {
+                out.push('{');
+                rest = &rest[1..];
+                continue;
+            }
+        };
+        out.push_str(&value);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Standardtext ohne Vorlage
 pub fn text(t: &Telegram) -> String {
     let mut head = format!("{} {}", t.kind.as_str().to_uppercase(), t.address);
     if !t.sub.is_empty() {
         head = format!("{head} {}", t.sub);
     }
     let mut text = head;
-    if !t.message.is_empty() {
-        text = format!("{text}\n{}", t.message);
+    for line in [t.message.clone(), [t.ort.as_str(), t.kurz.as_str()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ")] {
+        if !line.is_empty() {
+            text = format!("{text}\n{line}");
+        }
     }
     format!("{text}\n{} · {}", t.source, t.time.format("%d.%m.%Y %H:%M:%S"))
 }
@@ -250,7 +307,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
 
     fn telegram(kind: Kind, address: &str, message: &str) -> Telegram {
-        let d = Decoded { kind, address: address.into(), sub: "a".into(), message: message.into() };
+        let d = crate::telegram::Decoded { kind, address: address.into(), sub: "a".into(), message: message.into() };
         Telegram::new(d, "Scanner", chrono::Local::now())
     }
 
@@ -283,27 +340,23 @@ mod tests {
             message = "(?i)brand"
             notify = ["Handy"]
             priority = "high"
+            title = "🔥 {kurz}"
+            text = "{ort}: {message} ({alarm})"
             "#,
         )
         .unwrap();
         let alarms: Vec<Alarm> = c.alarm.iter().map(|a| compile(a, &c.notifier).unwrap()).collect();
-        let got = |t| targets(&alarms, &t);
+        let got = |t: Telegram| targets(&alarms, &t).into_iter().map(|(i, title, _, p)| (i, title, p)).collect::<Vec<_>>();
         assert_eq!(
             got(telegram(Kind::Pocsag, "1859992", "Brand 3")),
             [(0, "Schleife, Brand".into(), Priority::High), (1, "Schleife".into(), Priority::Normal)]
         );
-        assert_eq!(got(telegram(Kind::Pocsag, "1234567", "BRAND")), [(0, "Brand".into(), Priority::High)]);
+        let mut brand = telegram(Kind::Pocsag, "1234567", "BRAND");
+        (brand.ort, brand.kurz) = ("Musterstadt".into(), "FW".into());
+        assert_eq!(targets(&alarms, &brand), [(0, "🔥 FW".into(), "Musterstadt: BRAND (Brand)".into(), Priority::High)]);
         assert!(got(telegram(Kind::Fms, "1859992", "")).is_empty());
 
-        let unknown = AlarmConfig {
-            name: "X".into(),
-            kind: None,
-            address: None,
-            sub: None,
-            message: None,
-            notify: vec!["Fax".into()],
-            priority: Priority::Normal,
-        };
+        let unknown: AlarmConfig = toml::from_str("name = 'X'\nnotify = ['Fax']").unwrap();
         assert!(compile(&unknown, &c.notifier).is_err());
     }
 
@@ -322,8 +375,21 @@ mod tests {
 
     #[test]
     fn text_contains_all_fields() {
-        let s = text(&telegram(Kind::Pocsag, "1859992", "Brand 3"));
+        let mut t = telegram(Kind::Pocsag, "1859992", "Brand 3");
+        let s = text(&t);
         assert!(s.starts_with("POCSAG 1859992 a\nBrand 3\nScanner · "), "{s}");
+        t.ort = "Musterstadt".into();
+        t.kurz = "FW".into();
+        assert!(text(&t).starts_with("POCSAG 1859992 a\nBrand 3\nMusterstadt · FW\nScanner · "));
+    }
+
+    #[test]
+    fn fill_placeholders() {
+        let mut t = telegram(Kind::Pocsag, "1859992", "Brand 3");
+        t.lang = "Löschzug Nord".into();
+        let s = fill("{kind} {address}{sub}: {message} {unbekannt} {ort}| {lang} {alarm} {", &t, "Regel");
+        assert_eq!(s, "POCSAG 1859992a: Brand 3 {unbekannt} | Löschzug Nord Regel {");
+        assert!(fill("{time}", &t, "").contains('.'));
     }
 
     #[test]

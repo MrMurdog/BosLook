@@ -1,6 +1,9 @@
 # BosLook – Beispielkonfiguration. Kopieren nach boslook.toml und anpassen.
 
-# SQLite-Datenbank für empfangene Telegramme
+# Datenbank für Telegramme und Beschreibungen: Dateiname für SQLite oder eine Adresse für
+# MySQL/MariaDB bzw. PostgreSQL (Datenbank und Benutzer vorher anlegen, die Tabellen legt
+# BosLook selbst an), z. B. "mysql://boslook:passwort@localhost/boslook" oder
+# "postgres://boslook:passwort@localhost/boslook"
 database = "boslook.db"
 
 # Gleiche Telegramme (Alarme werden oft wiederholt) innerhalb dieser Sekunden nur einmal
@@ -59,7 +62,8 @@ pocsag = "auto"
 
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
 # Gibt es Filter ohne "exclude", muss mindestens einer passen.
-# Felder: kind (pocsag/fms/zvei), address, sub, message
+# Felder: kind (pocsag/fms/zvei/wetter), address, sub, message und aus den Beschreibungen
+# ort, kurz, lang
 [[filter]]
 name = "Eigene Schleifen"
 kind = "pocsag"
@@ -96,9 +100,13 @@ to = ["ich@example.org"]
 # Alarmregeln: Felder wie bei den Filtern, notify = Namen der Ziele.
 # priority (nur Pushover): "normal" (Standard), "high" (Ton auch bei „Nicht stören")
 # oder "emergency" (wird wiederholt, bis die Nachricht bestätigt ist)
+# title und text sind Vorlagen mit Platzhaltern: {kind} {address} {sub} {message} {ort}
+# {kurz} {lang} {source} {time} {alarm}. Ohne Vorlage: Name der Regel bzw. Standardtext.
 [[alarm]]
 name = "Eigene Schleife"
 kind = "pocsag"
 address = "^18599"
 notify = ["Handy", "Leitstelle"]
 priority = "high"
+# title = "{kurz}"
+# text = "{ort}: {message} ({time})"

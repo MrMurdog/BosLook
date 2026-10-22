@@ -3,8 +3,8 @@
 use crate::config::EventConfig;
 use anyhow::Result;
 use boslook::filter::{Filter, FilterConfig};
-use boslook::notify::{Priority, Repeats, text};
-use boslook::telegram::{Decoded, Telegram};
+use boslook::notify::{Priority, Repeats, fill, text};
+use boslook::telegram::Telegram;
 use std::time::{Duration, Instant};
 
 pub struct Events {
@@ -23,6 +23,9 @@ impl Events {
                     address: e.address.clone(),
                     sub: e.sub.clone(),
                     message: e.message.clone(),
+                    ort: e.ort.clone(),
+                    kurz: e.kurz.clone(),
+                    lang: e.lang.clone(),
                     exclude: false,
                 })?;
                 Ok((e.clone(), filter))
@@ -32,26 +35,21 @@ impl Events {
     }
 
     pub fn handle(&mut self, t: &Telegram) {
-        let d = Decoded { kind: t.kind, address: t.address.clone(), sub: t.sub.clone(), message: t.message.clone() };
-        let matching: Vec<&EventConfig> = self.rules.iter().filter(|(_, f)| f.matches(&d)).map(|(e, _)| e).collect();
+        let matching: Vec<&EventConfig> = self.rules.iter().filter(|(_, f)| f.matches(t)).map(|(e, _)| e).collect();
         if matching.is_empty() || self.repeats.is_repeat(t, Instant::now()) {
             return;
         }
-        let title = matching.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ");
+        let names = matching.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ");
         let priority = matching.iter().map(|e| e.priority).max().unwrap_or_default();
-        let body = text(t);
+        // Vorlagen der ersten passenden Regel
+        let title = fill(matching[0].title.as_deref().unwrap_or("{alarm}"), t, &names);
+        let body = matching[0].text.as_deref().map_or_else(|| text(t), |template| fill(template, t, &names));
         for e in &matching {
             if let Some(path) = &e.sound {
                 play(path.clone());
             }
             if let Some(program) = &e.program {
-                let args = e.args.iter().map(|a| {
-                    a.replace("{kind}", t.kind.as_str())
-                        .replace("{address}", &t.address)
-                        .replace("{sub}", &t.sub)
-                        .replace("{message}", &t.message)
-                        .replace("{source}", &t.source)
-                });
+                let args = e.args.iter().map(|a| fill(a, t, &e.name));
                 if let Err(err) = std::process::Command::new(program).args(args).spawn() {
                     eprintln!("Ereignis '{}': {program}: {err}", e.name);
                 }

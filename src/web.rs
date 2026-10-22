@@ -1,11 +1,12 @@
 use crate::config::{ClientConfig, UserConfig};
 use crate::db::Db;
-use crate::filter::Filters;
+use crate::descriptions::{self, Description, Search};
 use crate::forward::{Ack, Envelope};
-use crate::telegram::{Decoded, Telegram};
+use crate::telegram::Telegram;
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -19,6 +20,8 @@ const SESSION_COOKIE: &str = "boslook_session";
 
 pub struct App {
     pub db: Mutex<Db>,
+    /// Alle Beschreibungen für die Suche im Editor; wird nach Änderungen neu geladen
+    descriptions: Mutex<Option<Arc<Vec<Description>>>>,
     pub live: broadcast::Sender<Telegram>,
     users: Vec<UserConfig>,
     /// Namen der konfigurierten Eingänge, damit sie auch ohne Telegramme angezeigt werden
@@ -29,7 +32,6 @@ pub struct App {
     clients: Vec<ClientConfig>,
     /// Weg zur Speicherung für Telegramme von Clients
     ingest: mpsc::Sender<Telegram>,
-    filters: Arc<Filters>,
     config_path: String,
 }
 
@@ -39,7 +41,6 @@ pub struct Settings {
     pub secure_cookie: bool,
     pub clients: Vec<ClientConfig>,
     pub ingest: mpsc::Sender<Telegram>,
-    pub filters: Arc<Filters>,
     pub config_path: String,
 }
 
@@ -47,6 +48,7 @@ impl App {
     pub fn new(db: Db, s: Settings) -> App {
         App {
             db: Mutex::new(db),
+            descriptions: Mutex::new(None),
             live: broadcast::channel(256).0,
             users: s.users,
             inputs: s.inputs,
@@ -54,7 +56,6 @@ impl App {
             secure_cookie: s.secure_cookie,
             clients: s.clients,
             ingest: s.ingest,
-            filters: s.filters,
             config_path: s.config_path,
         }
     }
@@ -67,6 +68,31 @@ impl App {
             .find(|(k, _)| *k == SESSION_COOKIE)?
             .1;
         self.sessions.lock().unwrap().get(token).cloned()
+    }
+
+    fn descriptions(&self) -> anyhow::Result<Arc<Vec<Description>>> {
+        let mut cache = self.descriptions.lock().unwrap();
+        if cache.is_none() {
+            *cache = Some(Arc::new(self.db.lock().unwrap().descriptions()?));
+        }
+        Ok(cache.clone().expect("geladen"))
+    }
+
+    fn write_descriptions(&self, clear: bool, delete: &[String], insert: &[Description]) -> anyhow::Result<()> {
+        let delete: Vec<&str> = delete.iter().map(String::as_str).collect();
+        let result = self.db.lock().unwrap().write_descriptions(clear, &delete, insert);
+        // Zwischenspeicher mitändern statt neu zu laden (das dauert bei großen Adressbüchern)
+        let mut cache = self.descriptions.lock().unwrap();
+        match (&result, cache.as_mut()) {
+            (Ok(()), Some(all)) => {
+                let all = Arc::make_mut(all);
+                let delete: std::collections::HashSet<&str> = delete.into_iter().collect();
+                all.retain(|d| !clear && !delete.contains(d.address.as_str()));
+                all.extend_from_slice(insert);
+            }
+            _ => *cache = None,
+        }
+        result
     }
 }
 
@@ -85,6 +111,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
+        .route("/beschreibungen", get(|| async { Html(include_str!("web/descriptions.html")) }))
+        .route("/api/descriptions", get(search_descriptions).put(put_description).delete(delete_description))
+        // Große Adressbücher (z. B. 86 000 Einträge, etwa 5 MB)
+        .route("/api/descriptions/import", post(import_descriptions).layer(DefaultBodyLimit::max(64 << 20)))
+        .route("/api/descriptions/export", get(export_descriptions))
         .with_state(app)
 }
 
@@ -218,8 +249,8 @@ async fn receive(mut socket: WebSocket, app: Arc<App>, name: String) {
             eprintln!("Client '{name}': ungültige Nachricht");
             break;
         };
-        let d = Decoded { kind: t.kind, address: t.address.clone(), sub: t.sub.clone(), message: t.message.clone() };
-        if app.filters.allows(&d) && app.ingest.send(t).await.is_err() {
+        // Filtern und Beschreibungen nachschlagen wie bei eigenen Eingängen (siehe serve.rs)
+        if app.ingest.send(t).await.is_err() {
             break;
         }
         let ack = serde_json::to_string(&Ack { ack: seq }).unwrap();
@@ -317,4 +348,100 @@ async fn restart(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         crate::serve::restart();
     });
     StatusCode::ACCEPTED.into_response()
+}
+
+fn error(status: StatusCode, e: impl std::fmt::Display) -> Response {
+    (status, format!("{e:#}")).into_response()
+}
+
+async fn search_descriptions(State(app): State<Arc<App>>, headers: HeaderMap, Query(search): Query<Search>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match tokio::task::spawn_blocking(move || app.descriptions().map(|all| descriptions::search(&all, &search))).await {
+        Ok(Ok(page)) => Json(page).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Edit {
+    /// Bisherige Adresse, fehlt bei neuen Einträgen
+    old: Option<String>,
+    #[serde(flatten)]
+    description: Description,
+}
+
+async fn put_description(State(app): State<Arc<App>>, headers: HeaderMap, Json(edit): Json<Edit>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let (delete, d) = descriptions::edit(&app.descriptions()?, edit.old.as_deref(), edit.description)?;
+        app.write_descriptions(false, &delete, std::slice::from_ref(&d))?;
+        anyhow::Ok(d)
+    })
+    .await;
+    match result {
+        // Mit der einheitlichen Schreibweise der Adresse zurück
+        Ok(Ok(d)) => Json(d).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_REQUEST, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Address {
+    address: String,
+}
+
+async fn delete_description(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<Address>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match tokio::task::spawn_blocking(move || app.write_descriptions(false, &[q.address], &[])).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportOptions {
+    #[serde(default)]
+    clear: bool,
+}
+
+/// CSV-Datei (eigenes Format oder BosMon) importieren
+async fn import_descriptions(State(app): State<Arc<App>>, headers: HeaderMap, Query(o): Query<ImportOptions>, data: Bytes) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let import = descriptions::import(&data, &app.descriptions()?, o.clear);
+        app.write_descriptions(o.clear, &import.delete, &import.insert)?;
+        anyhow::Ok(import)
+    })
+    .await;
+    match result {
+        Ok(Ok(import)) => Json(import).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn export_descriptions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match tokio::task::spawn_blocking(move || descriptions::export(&app.descriptions()?)).await {
+        Ok(Ok(csv)) => (
+            [(header::CONTENT_TYPE, "text/csv; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=\"beschreibungen.csv\"")],
+            csv,
+        )
+            .into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beschreibungen – BosLook</title>
+<link rel="icon" href="/icon.svg">
+<style>
+  :root { --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea; --accent: #005795; --danger: #dd3127; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c; --accent: #4a9be0; --danger: #ef5350; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 8px 0 0; font-size: 18px; } header h1 span { color: var(--accent); }
+  button, .button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  #search { flex: 1 1 16rem; min-width: 0; }
+  main { padding: 16px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #info { color: var(--muted); }
+  #msg { white-space: pre-wrap; } #msg.err { color: var(--danger); }
+  .table { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: calc(100vh - 170px); }
+  table { width: 100%; min-width: 48rem; border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); cursor: pointer; user-select: none; padding: 8px 6px; }
+  th.sorted::after { content: " ▲"; } th.sorted.desc::after { content: " ▼"; }
+  th:nth-child(1) { width: 8rem; } th:nth-child(2) { width: 22%; } th:nth-child(3) { width: 22%; } th:last-child { width: 6.5rem; cursor: default; }
+  td input { width: 100%; border-color: transparent; background: transparent; }
+  td input:hover { border-color: var(--line); }
+  td input:focus { border-color: var(--accent); background: var(--bg); outline: none; }
+  td input.addr { font-family: ui-monospace, monospace; }
+  td input.bad { border-color: var(--danger); }
+  tr.saved td { background: color-mix(in srgb, var(--accent) 12%, transparent); transition: background 1s; }
+  details { position: relative; }
+  details summary { list-style: none; } details summary::-webkit-details-marker { display: none; }
+  details > div { position: absolute; right: 0; z-index: 2; margin-top: 4px; padding: 12px; width: 22rem; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px #0003; }
+  details > div p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  details > div label { display: block; margin: 8px 0; }
+  #login { max-width: 28rem; margin: 15vh auto; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <p>Bitte zuerst in BosLook anmelden.</p>
+  <a class="button" href="/">Zur Anmeldung</a>
+</div>
+<div id="app">
+  <header>
+    <h1>Bos<span>Look</span> · Beschreibungen</h1>
+    <input id="search" type="search" placeholder="Suchen (regulärer Ausdruck, z. B. ^19388 oder FW|RD)" autocomplete="off">
+    <button id="new" class="primary">+ Neu</button>
+    <details id="import">
+      <summary class="button">Importieren</summary>
+      <div>
+        <p>CSV-Datei im eigenen Format (mit Kopfzeile) oder aus BosMon (ohne Kopfzeile: Adresse, Ort, Kurz-, Langbeschreibung). Vorhandene Adressen werden überschrieben.</p>
+        <input id="file" type="file" accept=".csv,.txt,text/csv">
+        <label><input id="clear" type="checkbox"> Vorher alles löschen</label>
+        <button id="do-import" class="primary">Importieren</button>
+      </div>
+    </details>
+    <a class="button" href="/api/descriptions/export" download>Exportieren</a>
+  </header>
+  <main>
+    <div class="bar">
+      <button id="prev">‹</button>
+      <span id="info"></span>
+      <button id="next">›</button>
+      <span id="msg"></span>
+    </div>
+    <div class="table">
+      <table>
+        <thead><tr><th data-sort="address">Adresse</th><th data-sort="ort">Ort</th><th data-sort="kurz">Kurzbeschreibung</th><th data-sort="lang">Langbeschreibung</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE = 100;
+const FIELDS = ["address", "ort", "kurz", "lang"];
+let query = { q: "", sort: "address", desc: false, offset: 0 };
+let total = 0;
+
+function msg(text, error) { $("msg").textContent = text; $("msg").className = error ? "err" : ""; }
+
+async function request(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) { $("app").hidden = true; $("login").hidden = false; throw new Error("nicht angemeldet"); }
+  return res;
+}
+
+async function load() {
+  const params = new URLSearchParams({ ...query, limit: PAGE });
+  const res = await request("/api/descriptions?" + params);
+  if (!res.ok) return msg(await res.text(), true);
+  const page = await res.json();
+  // Antworten auf ältere Suchen ignorieren
+  if (params.get("q") !== query.q) return;
+  total = page.total;
+  $("rows").replaceChildren(...page.rows.map(row));
+  const from = total ? query.offset + 1 : 0, to = Math.min(query.offset + PAGE, total);
+  $("info").textContent = `${from.toLocaleString("de-DE")}–${to.toLocaleString("de-DE")} von ${total.toLocaleString("de-DE")}`;
+  $("prev").disabled = query.offset === 0;
+  $("next").disabled = to >= total;
+  msg(page.notice ?? "", !!page.notice);
+  for (const th of document.querySelectorAll("th[data-sort]")) {
+    th.classList.toggle("sorted", th.dataset.sort === query.sort);
+    th.classList.toggle("desc", query.desc);
+  }
+}
+
+// Eine Zeile mit Eingabefeldern; gespeichert wird beim Verlassen eines geänderten Felds
+function row(d) {
+  const tr = document.createElement("tr");
+  tr.old = d.address || null;
+  const inputs = FIELDS.map((key) => {
+    const input = document.createElement("input");
+    input.value = d[key] ?? "";
+    input.name = key;
+    if (key === "address") { input.className = "addr"; input.placeholder = "1234567a"; }
+    input.onchange = () => save(tr);
+    input.onkeydown = (e) => { if (e.key === "Enter") input.blur(); };
+    const td = document.createElement("td");
+    td.append(input);
+    tr.append(td);
+    return input;
+  });
+  tr.inputs = inputs;
+  const td = document.createElement("td");
+  const del = document.createElement("button");
+  del.textContent = "Löschen";
+  del.onclick = () => remove(tr);
+  td.append(del);
+  tr.append(td);
+  return tr;
+}
+
+async function save(tr) {
+  const [address] = tr.inputs;
+  if (!address.value.trim()) return;
+  const body = { old: tr.old };
+  FIELDS.forEach((key, i) => (body[key] = tr.inputs[i].value));
+  const res = await request("/api/descriptions", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) { address.classList.add("bad"); return msg(await res.text(), true); }
+  const d = await res.json();
+  address.classList.remove("bad");
+  FIELDS.forEach((key, i) => (tr.inputs[i].value = d[key]));
+  if (!tr.old) total++;
+  tr.old = d.address;
+  tr.classList.add("saved"); setTimeout(() => tr.classList.remove("saved"), 50);
+  msg(`${d.address} gespeichert`);
+}
+
+async function remove(tr) {
+  if (!tr.old) return tr.remove();
+  if (!confirm(`${tr.old} löschen?`)) return;
+  const res = await request("/api/descriptions?" + new URLSearchParams({ address: tr.old }), { method: "DELETE" });
+  if (!res.ok) return msg(await res.text(), true);
+  msg(`${tr.old} gelöscht`);
+  tr.remove();
+  total--;
+}
+
+$("new").onclick = () => {
+  const tr = row({});
+  $("rows").prepend(tr);
+  tr.inputs[0].focus();
+};
+
+let timer = null;
+$("search").oninput = () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => { query.q = $("search").value; query.offset = 0; load(); }, 250);
+};
+$("prev").onclick = () => { query.offset = Math.max(0, query.offset - PAGE); load(); };
+$("next").onclick = () => { query.offset += PAGE; load(); };
+for (const th of document.querySelectorAll("th[data-sort]")) {
+  th.onclick = () => {
+    query.desc = query.sort === th.dataset.sort ? !query.desc : false;
+    query.sort = th.dataset.sort; query.offset = 0;
+    load();
+  };
+}
+
+$("do-import").onclick = async () => {
+  const file = $("file").files[0];
+  if (!file) return msg("Bitte eine Datei wählen", true);
+  if ($("clear").checked && !confirm("Alle vorhandenen Beschreibungen werden gelöscht. Fortfahren?")) return;
+  $("do-import").disabled = true;
+  msg("Importiere …");
+  try {
+    const res = await request("/api/descriptions/import?" + new URLSearchParams({ clear: $("clear").checked }), { method: "POST", body: file });
+    if (!res.ok) return msg("Import fehlgeschlagen: " + await res.text(), true);
+    const r = await res.json();
+    const n = (x) => x.toLocaleString("de-DE");
+    let text = `Import: ${n(r.new)} neu, ${n(r.changed)} geändert, ${n(r.unchanged)} unverändert`;
+    if (r.errors.length) text += `, ${n(r.errors.length)} Zeilen fehlerhaft:\n` + r.errors.slice(0, 20).join("\n") + (r.errors.length > 20 ? "\n…" : "");
+    $("import").open = false;
+    query.offset = 0;
+    await load();
+    msg(text, r.errors.length > 0);
+  } finally {
+    $("do-import").disabled = false;
+  }
+};
+
+load();
+</script>
+</body>
+</html>

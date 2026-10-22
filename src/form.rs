@@ -59,6 +59,8 @@ pub enum Input {
     Select(Vec<&'static str>),
     /// Liste von Texten, im Formular eine Zeile je Eintrag
     Lines,
+    /// Ein Text über mehrere Zeilen (Vorlagen)
+    Multiline,
     /// Mehrfachauswahl aus festen Werten
     Choices(Vec<&'static str>),
     /// Mehrfachauswahl aus den Namen der Einträge eines anderen Abschnitts
@@ -107,8 +109,20 @@ pub fn match_fields() -> Vec<Field> {
         field("address", "Adresse", Input::Text).help("Regulärer Ausdruck, z. B. ^18599"),
         field("sub", "Sub", Input::Text).help("Regulärer Ausdruck"),
         field("message", "Meldung", Input::Text).help("Regulärer Ausdruck"),
+        field("ort", "Ort", Input::Text).help("Regulärer Ausdruck, Ort aus den Beschreibungen"),
+        field("kurz", "Kurzbeschreibung", Input::Text).help("Regulärer Ausdruck"),
+        field("lang", "Langbeschreibung", Input::Text).help("Regulärer Ausdruck"),
     ]
 }
+
+/// Titel und Text einer Benachrichtigung (Alarme und Desktop-Ereignisse)
+pub fn template_fields(title_help: &'static str, text_help: &'static str) -> Vec<Field> {
+    vec![field("title", "Titel", Input::Text).help(title_help), field("text", "Text", Input::Multiline).help(text_help)]
+}
+
+/// Hilfetext mit den Platzhaltern aus [`crate::notify::PLACEHOLDERS`]
+pub const TEMPLATE_HELP: &str =
+    "Platzhalter: {kind} {address} {sub} {message} {ort} {kurz} {lang} {source} {time} {alarm}; leer = Standardtext";
 
 pub fn priority_field(help: &'static str) -> Field {
     field("priority", "Priorität", Input::Select(PRIORITIES.to_vec())).default("normal").help(help)
@@ -124,7 +138,9 @@ pub fn server_schema() -> Vec<Section> {
             help: "",
             kind: SectionKind::Root,
             fields: vec![
-                field("database", "Datenbank", Input::Text).default("boslook.db"),
+                field("database", "Datenbank", Input::Text)
+                    .default("boslook.db")
+                    .help("Dateiname (SQLite) oder mysql://benutzer:passwort@server/datenbank bzw. postgres://…"),
                 field("notify_repeat", "Wiederholungen unterdrücken (s)", Input::Number)
                     .default(60)
                     .help("Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen, 0 = aus"),
@@ -211,6 +227,7 @@ pub fn server_schema() -> Vec<Section> {
                     field("notify", "Ziele", Input::Names("notifier")).required(),
                     priority_field("Pushover: high = Ton auch bei „Nicht stören“, emergency = wiederholt, bis bestätigt"),
                 ],
+                template_fields("leer = Namen der Alarme ({alarm})", TEMPLATE_HELP),
             ]
             .into_iter()
             .flatten()
@@ -374,7 +391,7 @@ fn convert(f: &Field, value: Option<&Value>, old: Option<&Value>, context: &str)
             let items: Vec<Value> = a.iter().filter_map(|v| v.as_str().and_then(text)).collect();
             (!items.is_empty()).then(|| items.into())
         }
-        (Input::Text | Input::Password | Input::Secret | Input::Select(_) | Input::Device, Value::String(s)) => text(s),
+        (Input::Text | Input::Multiline | Input::Password | Input::Secret | Input::Select(_) | Input::Device, Value::String(s)) => text(s),
         _ => bail!("{context}: ungültiger Wert für {}", f.label),
     })
 }

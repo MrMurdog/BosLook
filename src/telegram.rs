@@ -55,6 +55,13 @@ pub struct Telegram {
     pub address: String,
     pub sub: String,
     pub message: String,
+    /// Aus den Beschreibungen (nur POCSAG): Ort, Kurz- und Langbeschreibung
+    #[serde(default)]
+    pub ort: String,
+    #[serde(default)]
+    pub kurz: String,
+    #[serde(default)]
+    pub lang: String,
 }
 
 impl Telegram {
@@ -67,6 +74,9 @@ impl Telegram {
             address: d.address,
             sub: d.sub,
             message: d.message,
+            ort: String::new(),
+            kurz: String::new(),
+            lang: String::new(),
         }
     }
 }

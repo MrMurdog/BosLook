@@ -1,11 +1,11 @@
 [package]
 name = "boslook"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 
 [features]
 # Desktop-App (boslook-desktop): cargo build --release --features desktop
-desktop = ["dep:eframe", "dep:egui_extras", "dep:winit", "dep:reqwest", "dep:tray-icon", "dep:notify-rust", "dep:rodio"]
+desktop = ["dep:eframe", "dep:egui_extras", "dep:winit", "dep:reqwest", "dep:rfd", "dep:tray-icon", "dep:notify-rust", "dep:rodio"]
 
 [[bin]]
 name = "boslook"
@@ -24,8 +24,10 @@ axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
+csv = "1.4.0"
 eframe = { version = "0.37", optional = true, features = ["persistence"] }
 egui_extras = { version = "0.37", optional = true, features = ["serde"] }
+encoding_rs = "0.8.42"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hound = "3.5.1"
@@ -34,8 +36,9 @@ notify-rust = { version = "4", optional = true }
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
 regex = "1.13.1"
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls-no-provider", "json", "query"] }
+rfd = { version = "0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
 rodio = { version = "0.23", optional = true }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "mysql", "postgres"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

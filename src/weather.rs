@@ -5,7 +5,6 @@
 //! Zeitraum und Beschreibung. Bereits gespeicherte Warnungen werden nicht erneut gemeldet.
 
 use crate::db::Db;
-use crate::filter::Filters;
 use crate::telegram::{Decoded, Kind, Telegram};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
@@ -73,12 +72,12 @@ fn parse(jsonp: &str, warncells: &[String]) -> Result<Vec<Decoded>> {
     Ok(out)
 }
 
-pub fn run(config: &WeatherConfig, filters: &Filters, db: &Mutex<Db>, tx: &mpsc::Sender<Telegram>) {
+pub fn run(config: &WeatherConfig, db: &Mutex<Db>, tx: &mpsc::Sender<Telegram>) {
     loop {
         let result = fetch(WARNINGS_URL).and_then(|text| parse(&text, &config.warncells));
         match result {
             Ok(warnings) => {
-                for d in warnings.into_iter().filter(|d| filters.allows(d)) {
+                for d in warnings {
                     let known = db.lock().unwrap().contains(d.kind, &d.address, &d.message).unwrap_or(false);
                     if !known {
                         let _ = tx.blocking_send(Telegram::new(d, SOURCE, Local::now()));

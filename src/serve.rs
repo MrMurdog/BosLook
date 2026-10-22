@@ -57,7 +57,7 @@ pub async fn run(config_path: &str) -> Result<()> {
     let config = Config::load(config_path)?;
     validate(&config)?;
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
-    let filters = Arc::new(Filters::new(&config.filters)?);
+    let filters = Filters::new(&config.filters)?;
     let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
@@ -76,20 +76,19 @@ pub async fn run(config_path: &str) -> Result<()> {
             clients: config.clients,
             config_path: config_path.to_string(),
             ingest: tx.clone(),
-            filters: filters.clone(),
         },
     ));
     for i in config.inputs {
-        let (filters, tx) = (filters.clone(), tx.clone());
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            if let Err(e) = run_input(&i, &filters, &tx) {
+            if let Err(e) = run_input(&i, &tx) {
                 eprintln!("Eingang '{}': {e:#}", i.name);
             }
         });
     }
     if let Some(weather) = config.weather {
-        let (filters, tx, app) = (filters.clone(), tx.clone(), app.clone());
-        std::thread::spawn(move || crate::weather::run(&weather, &filters, &app.db, &tx));
+        let (tx, app) = (tx.clone(), app.clone());
+        std::thread::spawn(move || crate::weather::run(&weather, &app.db, &tx));
     }
     drop(tx);
 
@@ -102,9 +101,19 @@ pub async fn run(config_path: &str) -> Result<()> {
     let store = app.clone();
     tokio::spawn(async move {
         while let Some(mut t) = rx.recv().await {
-            match store.db.lock().unwrap().insert(&t) {
-                Ok(id) => t.id = id,
-                Err(e) => eprintln!("Datenbank: {e:#}"),
+            // Erst nachschlagen, dann filtern: Filter können auch Ort und Beschreibungen prüfen
+            {
+                let db = store.db.lock().unwrap();
+                if let Err(e) = db.describe(&mut t) {
+                    eprintln!("Datenbank: {e:#}");
+                }
+                if !filters.allows(&t) {
+                    continue;
+                }
+                match db.insert(&t) {
+                    Ok(id) => t.id = id,
+                    Err(e) => eprintln!("Datenbank: {e:#}"),
+                }
             }
             println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
             notify.handle(&t);
@@ -140,9 +149,9 @@ pub async fn run(config_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_input(input: &InputConfig, filters: &Filters, tx: &mpsc::Sender<Telegram>) -> Result<()> {
+fn run_input(input: &InputConfig, tx: &mpsc::Sender<Telegram>) -> Result<()> {
     let send = |decoded: Vec<Decoded>| {
-        for d in decoded.into_iter().filter(|d| filters.allows(d)) {
+        for d in decoded {
             let _ = tx.blocking_send(Telegram::new(d, &input.name, chrono::Local::now()));
         }
     };

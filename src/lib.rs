@@ -3,6 +3,7 @@
 pub mod config;
 pub mod db;
 pub mod decoder;
+pub mod descriptions;
 pub mod filter;
 pub mod form;
 pub mod forward;

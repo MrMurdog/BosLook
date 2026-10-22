@@ -3,6 +3,7 @@
 use crate::config::ServerConfig;
 use crate::events::Events;
 use anyhow::{Context, Result, bail};
+use boslook::descriptions::{Description, Page, Search};
 use boslook::telegram::Telegram;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{COOKIE, SET_COOKIE};
@@ -27,6 +28,12 @@ pub enum FromClient {
     /// Schema, Werte und Soundkarten für das Formular
     ServerForm(Result<serde_json::Value, String>),
     Saved(Result<String, String>),
+    /// Seite der Beschreibungen für den Editor
+    Descriptions(Result<Page, String>),
+    /// Gespeicherte Beschreibung (Zeile im Editor, Eintrag in einheitlicher Schreibweise)
+    DescriptionSaved { row: u64, result: Result<Description, String> },
+    /// Ergebnis von Löschen, Import und Export; danach die Seite neu laden
+    DescriptionsChanged(Result<String, String>),
 }
 
 pub enum ToClient {
@@ -34,6 +41,11 @@ pub enum ToClient {
     LoadServerForm,
     SaveServerConfig { text: String, restart: bool },
     SaveServerForm { values: serde_json::Value, restart: bool },
+    SearchDescriptions(Search),
+    SaveDescription { row: u64, old: Option<String>, description: Description },
+    DeleteDescription(String),
+    ImportDescriptions { path: std::path::PathBuf, clear: bool },
+    ExportDescriptions(std::path::PathBuf),
 }
 
 /// Startet die Verbindung in einem eigenen Thread. Jede Nachricht an die Oberfläche weckt sie über `wake` auf.
@@ -82,6 +94,11 @@ fn not_connected(cmd: ToClient) -> FromClient {
         ToClient::LoadServerConfig => FromClient::ServerConfig(Err(e)),
         ToClient::LoadServerForm => FromClient::ServerForm(Err(e)),
         ToClient::SaveServerConfig { .. } | ToClient::SaveServerForm { .. } => FromClient::Saved(Err(e)),
+        ToClient::SearchDescriptions(_) => FromClient::Descriptions(Err(e)),
+        ToClient::SaveDescription { row, .. } => FromClient::DescriptionSaved { row, result: Err(e) },
+        ToClient::DeleteDescription(_) | ToClient::ImportDescriptions { .. } | ToClient::ExportDescriptions(_) => {
+            FromClient::DescriptionsChanged(Err(e))
+        }
     }
 }
 
@@ -169,6 +186,45 @@ async fn session(
                     let result = save_server_config(&http, &base, &cookie, request, restart).await;
                     send(FromClient::Saved(result.map_err(|e| format!("{e:#}"))));
                 }
+                Some(ToClient::SearchDescriptions(search)) => {
+                    let result = async { anyhow::Ok(checked(get("/api/descriptions").query(&search)).await?.json().await?) }.await;
+                    send(FromClient::Descriptions(result.map_err(|e| format!("{e:#}"))));
+                }
+                Some(ToClient::SaveDescription { row, old, description }) => {
+                    let body = serde_json::json!({ "old": old, "address": description.address, "ort": description.ort, "kurz": description.kurz, "lang": description.lang });
+                    let request = http.put(format!("{base}/api/descriptions")).header(COOKIE, &cookie).json(&body);
+                    let result = async { anyhow::Ok(checked(request).await?.json().await?) }.await;
+                    send(FromClient::DescriptionSaved { row, result: result.map_err(|e| format!("{e:#}")) });
+                }
+                Some(ToClient::DeleteDescription(address)) => {
+                    let request = http.delete(format!("{base}/api/descriptions")).header(COOKIE, &cookie).query(&[("address", &address)]);
+                    let result = checked(request).await.map(|_| format!("{address} gelöscht"));
+                    send(FromClient::DescriptionsChanged(result.map_err(|e| format!("{e:#}"))));
+                }
+                Some(ToClient::ImportDescriptions { path, clear }) => {
+                    let result = async {
+                        let data = std::fs::read(&path).with_context(|| path.display().to_string())?;
+                        let request = http.post(format!("{base}/api/descriptions/import")).header(COOKIE, &cookie).query(&[("clear", clear)]).body(data);
+                        let r: serde_json::Value = checked(request.timeout(Duration::from_secs(300))).await?.json().await?;
+                        let errors: Vec<&str> = r["errors"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).collect();
+                        let mut text = format!("Import: {} neu, {} geändert, {} unverändert", r["new"], r["changed"], r["unchanged"]);
+                        if !errors.is_empty() {
+                            text += &format!(", {} Zeilen fehlerhaft:\n{}", errors.len(), errors.iter().take(20).copied().collect::<Vec<_>>().join("\n"));
+                        }
+                        anyhow::Ok(text)
+                    }
+                    .await;
+                    send(FromClient::DescriptionsChanged(result.map_err(|e| format!("Import fehlgeschlagen: {e:#}"))));
+                }
+                Some(ToClient::ExportDescriptions(path)) => {
+                    let result = async {
+                        let csv = checked(get("/api/descriptions/export")).await?.bytes().await?;
+                        std::fs::write(&path, csv).with_context(|| path.display().to_string())?;
+                        anyhow::Ok(format!("Exportiert nach {}", path.display()))
+                    }
+                    .await;
+                    send(FromClient::DescriptionsChanged(result.map_err(|e| format!("Export fehlgeschlagen: {e:#}"))));
+                }
             },
         }
     }
@@ -184,4 +240,13 @@ async fn save_server_config(http: &reqwest::Client, base: &str, cookie: &str, re
     }
     http.post(format!("{base}/api/restart")).header(COOKIE, cookie).send().await?.error_for_status()?;
     Ok("Gespeichert, der Server startet neu. Die Verbindung wird danach neu aufgebaut.".into())
+}
+
+/// Anfrage senden; bei einem Fehler die Meldung des Servers zurückgeben
+async fn checked(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let res = request.send().await?;
+    if !res.status().is_success() {
+        bail!("{}", res.text().await?);
+    }
+    Ok(res)
 }

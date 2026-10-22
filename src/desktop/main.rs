@@ -6,6 +6,7 @@
 
 mod client;
 mod config;
+mod descriptions;
 mod events;
 mod form;
 
@@ -22,6 +23,17 @@ use std::sync::mpsc;
 const RED: Color32 = Color32::from_rgb(0xdd, 0x31, 0x27);
 /// So viele Telegramme je Quelle bleiben in der Anzeige
 const MAX_ROWS: usize = 1000;
+/// Spalten der Tabelle: Schlüssel, Überschrift, Anfangsbreite (`None`: Meldung, bekommt den Rest)
+const COLUMNS: [(&str, &str, Option<f32>); 8] = [
+    ("time", "Zeit", Some(150.0)),
+    ("kind", "Art", Some(70.0)),
+    ("address", "Adresse", Some(90.0)),
+    ("sub", "Sub", Some(60.0)),
+    ("message", "Meldung", None),
+    ("ort", "Ort", Some(140.0)),
+    ("kurz", "Kurzbeschreibung", Some(140.0)),
+    ("lang", "Langbeschreibung", Some(200.0)),
+];
 
 #[derive(Parser)]
 #[command(name = "boslook-desktop", version, about = "BosLook Desktop")]
@@ -52,7 +64,14 @@ fn main() -> eframe::Result {
         return popup(title, body, emergency);
     }
     let options = options(egui::ViewportBuilder::default().with_title("BosLook").with_inner_size([1000.0, 650.0]));
-    eframe::run_native("BosLook", options, Box::new(|cc| Ok(Box::new(App::new(cli.config, &cc.egui_ctx)))))
+    eframe::run_native(
+        "BosLook",
+        options,
+        Box::new(|cc| {
+            let hidden = cc.storage.and_then(|s| eframe::get_value(s, HIDDEN)).unwrap_or_default();
+            Ok(Box::new(App::new(cli.config, hidden, &cc.egui_ctx)))
+        }),
+    )
 }
 
 #[derive(PartialEq)]
@@ -77,10 +96,16 @@ struct App {
     server: Editor,
     /// Anfrage an den Server läuft, nicht nochmal laden
     server_loading: bool,
+    descriptions: descriptions::Window,
+    /// Ausgeblendete Spalten (Schlüssel aus `COLUMNS`)
+    hidden: Vec<String>,
     tray: Option<tray_icon::TrayIcon>,
     tray_rx: mpsc::Receiver<TrayAction>,
     quit: bool,
 }
+
+/// Schlüssel der ausgeblendeten Spalten im gespeicherten Zustand
+const HIDDEN: &str = "hidden_columns";
 
 enum TrayAction {
     Show,
@@ -88,7 +113,7 @@ enum TrayAction {
 }
 
 impl App {
-    fn new(config_path: String, ctx: &egui::Context) -> App {
+    fn new(config_path: String, hidden: Vec<String>, ctx: &egui::Context) -> App {
         let (tx, rx) = mpsc::channel();
         let (tray, tray_rx) = tray(ctx);
         let mut app = App {
@@ -105,6 +130,8 @@ impl App {
             desktop: Editor::default(),
             server: Editor::default(),
             server_loading: false,
+            descriptions: descriptions::Window::default(),
+            hidden,
             tray,
             tray_rx,
             quit: false,
@@ -207,6 +234,9 @@ impl App {
                     self.server.msg = msg;
                     self.server.clear();
                 }
+                FromClient::Descriptions(result) => self.descriptions.page(result),
+                FromClient::DescriptionSaved { row, result } => self.descriptions.saved(row, result),
+                FromClient::DescriptionsChanged(result) => self.descriptions.changed(result),
             }
         }
     }
@@ -231,56 +261,66 @@ impl App {
         self.unread.remove(&active);
         ui.separator();
         // Spaltenbreiten lassen sich mit der Maus ziehen und bleiben über Neustarts erhalten
+        // (je Auswahl an Spalten)
+        let columns: Vec<_> = COLUMNS.iter().filter(|c| !self.hidden.iter().any(|h| h == c.0)).collect();
         let line = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        let fixed = |width: f32| Column::initial(width).at_least(30.0).clip(true);
         // Werden die Spalten breiter als das Fenster, lässt sich waagerecht scrollen
         egui::ScrollArea::horizontal().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .id_salt("rows")
+            let mut table = TableBuilder::new(ui)
+                .id_salt(("rows", columns.iter().map(|c| c.0).collect::<Vec<_>>()))
                 .striped(true)
                 .resizable(true)
-                .auto_shrink(false)
-                .column(fixed(150.0))
-                .column(fixed(70.0))
-                .column(fixed(90.0))
-                .column(fixed(60.0))
-                .column(Column::remainder().at_least(100.0))
+                .auto_shrink(false);
+            for (_, _, width) in &columns {
+                table = table.column(match width {
+                    Some(w) => Column::initial(*w).at_least(30.0).clip(true),
+                    None => Column::remainder().at_least(100.0),
+                });
+            }
+            table
                 .header(line, |mut header| {
-                    for h in ["Zeit", "Art", "Adresse", "Sub", "Meldung"] {
+                    for (_, label, _) in &columns {
                         header.col(|ui| {
-                            ui.strong(h);
+                            ui.strong(*label);
                         });
                     }
                 })
                 .body(|mut body| {
                     let rows: Vec<&Telegram> = self.rows.get(&active).into_iter().flatten().collect();
-                    // Lange Meldungen werden umgebrochen, die Zeile wächst mit
-                    let width = body.widths()[4];
+                    // Lange Texte werden umgebrochen, die Zeile wächst mit
+                    let widths = body.widths().to_vec();
                     let ui = body.ui_mut();
                     let heights: Vec<f32> = rows
                         .iter()
                         .map(|t| {
-                            let galley = egui::WidgetText::from(t.message.as_str()).into_galley(ui, Some(egui::TextWrapMode::Wrap), width, egui::TextStyle::Body);
-                            line.max(galley.size().y + 6.0)
+                            columns.iter().zip(&widths).fold(line, |height, ((key, _, _), width)| {
+                                let text = wrapped(t, key).unwrap_or_default();
+                                let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Wrap), *width, egui::TextStyle::Body);
+                                height.max(galley.size().y + 6.0)
+                            })
                         })
                         .collect();
                     body.heterogeneous_rows(heights.into_iter(), |mut row| {
                         let t = rows[row.index()];
-                        row.col(|ui| {
-                            ui.label(t.time.format("%d.%m.%Y %H:%M:%S").to_string());
-                        });
-                        row.col(|ui| {
-                            ui.label(RichText::new(t.kind.as_str().to_uppercase()).strong().color(Color32::WHITE).background_color(kind_color(t.kind)));
-                        });
-                        row.col(|ui| {
-                            ui.monospace(&t.address);
-                        });
-                        row.col(|ui| {
-                            ui.monospace(&t.sub);
-                        });
-                        row.col(|ui| {
-                            ui.add(egui::Label::new(&t.message).wrap());
-                        });
+                        for (key, _, _) in &columns {
+                            row.col(|ui| match *key {
+                                "time" => {
+                                    ui.label(t.time.format("%d.%m.%Y %H:%M:%S").to_string());
+                                }
+                                "kind" => {
+                                    ui.label(RichText::new(t.kind.as_str().to_uppercase()).strong().color(Color32::WHITE).background_color(kind_color(t.kind)));
+                                }
+                                "address" => {
+                                    ui.monospace(&t.address);
+                                }
+                                "sub" => {
+                                    ui.monospace(&t.sub);
+                                }
+                                key => {
+                                    ui.add(egui::Label::new(wrapped(t, key).unwrap_or_default()).wrap());
+                                }
+                            });
+                        }
                     });
                 });
         });
@@ -349,11 +389,21 @@ impl eframe::App for App {
                 }
             }
         }
+        let cmd = &self.cmd;
+        self.descriptions.ui(ctx, &mut |c| {
+            if let Some(tx) = cmd {
+                let _ = tx.send(c);
+            }
+        });
         // Mit Infobereich nur verstecken, damit Ereignisse weiter ausgeführt werden
         if ctx.input(|i| i.viewport().close_requested()) && self.tray.is_some() && !self.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, HIDDEN, &self.hidden);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -367,6 +417,25 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.view, View::Telegrams, "Telegramme");
                 ui.selectable_value(&mut self.view, View::Desktop, "Einstellungen");
                 ui.selectable_value(&mut self.view, View::Server, "Server-Konfiguration");
+                ui.separator();
+                if ui.button("Beschreibungen").clicked() {
+                    self.descriptions.show(ui.ctx());
+                }
+                if self.view == View::Telegrams {
+                    // Offen lassen, damit mehrere Spalten auf einmal umgeschaltet werden können
+                    let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                    egui::containers::menu::MenuButton::new("Spalten").config(config).ui(ui, |ui| {
+                        for (key, label, _) in COLUMNS {
+                            let mut on = !self.hidden.iter().any(|h| h == key);
+                            if ui.checkbox(&mut on, label).changed() {
+                                self.hidden.retain(|h| h != key);
+                                if !on {
+                                    self.hidden.push(key.to_string());
+                                }
+                            }
+                        }
+                    });
+                }
             });
         });
         // Statuszeile unten, damit lange Fehlermeldungen umbrechen statt die Reiter zu überdecken
@@ -466,6 +535,17 @@ fn editor(ui: &mut egui::Ui, text: &mut String) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add(egui::TextEdit::multiline(text).code_editor().desired_width(f32::INFINITY).desired_rows(30));
     });
+}
+
+/// Text der umbrechenden Spalten
+fn wrapped<'a>(t: &'a Telegram, key: &str) -> Option<&'a str> {
+    match key {
+        "message" => Some(&t.message),
+        "ort" => Some(&t.ort),
+        "kurz" => Some(&t.kurz),
+        "lang" => Some(&t.lang),
+        _ => None,
+    }
 }
 
 fn kind_color(kind: Kind) -> Color32 {
