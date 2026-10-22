@@ -139,11 +139,13 @@ den Filtern):
 
 Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). Beim ersten
 Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
-„Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten.
+„Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten. Die Spaltenbreiten
+der Tabelle lassen sich (wie in der Weboberfläche) mit der Maus ziehen und bleiben gespeichert.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter
 Linux braucht das eine Arbeitsumgebung mit Infobereich (KDE, XFCE, GNOME mit
-AppIndicator-Erweiterung), sonst wird die App beim Schließen beendet.
+AppIndicator-Erweiterung), sonst wird die App beim Schließen beendet. Unter Wayland läuft die
+App über XWayland, weil sich Fenster dort sonst weder verstecken noch im Vordergrund halten lassen.
 
 ```sh
 cargo build --release --features desktop --bin boslook-desktop

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BosLook</title>
+<link rel="icon" href="/icon.svg">
 <style>
   :root {
     --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea;
@@ -17,7 +18,7 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
-  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
   header h1 { margin: 0; font-size: 18px; } header h1 span { color: var(--accent); }
   #status { margin-left: auto; color: var(--muted); font-size: 13px; }
   #status.on::before { content: "●"; color: #43a047; margin-right: 4px; }
@@ -32,13 +33,17 @@
   #tabs .count { margin-left: 6px; padding: 0 6px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; overflow: hidden; }
   .table { max-height: calc(100vh - 150px); overflow: auto; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  #panels { --w0: 11.5rem; --w1: 5rem; --w2: 6rem; --w3: 3.5rem; }
+  /* Meldung bekommt den Rest, mindestens 16rem; sonst scrollt die Tabelle waagerecht */
+  table { width: 100%; min-width: calc(var(--w0) + var(--w1) + var(--w2) + var(--w3) + 16rem); border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; overflow: hidden; box-sizing: border-box; }
   th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  th:nth-child(1) { width: var(--w0); } th:nth-child(2) { width: var(--w1); } th:nth-child(3) { width: var(--w2); } th:nth-child(4) { width: var(--w3); }
+  th .grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; border-right: 1px solid var(--line); touch-action: none; }
   #empty { color: var(--muted); }
   td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.addr { font-family: ui-monospace, monospace; white-space: nowrap; }
-  td.msg { word-break: break-word; min-width: 16em; }
+  td.msg { word-break: break-word; }
   .kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; color: #fff; }
   .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); } .kind.wetter { background: var(--wetter); }
   tr.new { background: var(--new); transition: background 3s; }
@@ -92,7 +97,7 @@
   <section class="panel" hidden>
     <div class="table">
       <table>
-        <thead><tr><th>Zeit</th><th>Art</th><th>Adresse</th><th>Sub</th><th>Meldung</th></tr></thead>
+        <thead><tr><th>Zeit<span class="grip" data-col="0"></span></th><th>Art<span class="grip" data-col="1"></span></th><th>Adresse<span class="grip" data-col="2"></span></th><th>Sub<span class="grip" data-col="3"></span></th><th>Meldung</th></tr></thead>
         <tbody></tbody>
       </table>
       <button class="more">Ältere laden</button>
@@ -198,6 +203,28 @@ $("tabs").ondragover = (e) => {
   $("tabs").insertBefore(dragging, e.clientX < box.left + box.width / 2 ? target : target.nextSibling);
 };
 $("tabs").ondrop = (e) => e.preventDefault();
+
+// Spaltenbreiten per Ziehen am rechten Rand der Überschrift; gelten für alle Reiter in diesem Browser
+const widths = load("boslook.widths", {});
+function applyWidths() {
+  for (const [col, w] of Object.entries(widths)) $("panels").style.setProperty("--w" + col, w + "px");
+}
+applyWidths();
+$("panels").onpointerdown = (e) => {
+  const grip = e.target.closest(".grip");
+  if (!grip) return;
+  e.preventDefault();
+  grip.setPointerCapture(e.pointerId);
+  const offset = e.clientX - grip.parentElement.offsetWidth;
+  grip.onpointermove = (e) => {
+    widths[grip.dataset.col] = Math.max(40, e.clientX - offset);
+    applyWidths();
+  };
+  grip.onpointerup = () => {
+    grip.onpointermove = null;
+    save("boslook.widths", widths);
+  };
+};
 
 async function loadOlder(source) {
   const p = panel(source);

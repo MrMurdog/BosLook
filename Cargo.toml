@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 # Desktop-App (boslook-desktop): cargo build --release --features desktop
-desktop = ["dep:eframe", "dep:reqwest", "dep:tray-icon", "dep:notify-rust", "dep:rodio"]
+desktop = ["dep:eframe", "dep:egui_extras", "dep:winit", "dep:reqwest", "dep:tray-icon", "dep:notify-rust", "dep:rodio"]
 
 [[bin]]
 name = "boslook"
@@ -24,7 +24,8 @@ axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
-eframe = { version = "0.37", optional = true }
+eframe = { version = "0.37", optional = true, features = ["persistence"] }
+egui_extras = { version = "0.37", optional = true, features = ["serde"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hound = "3.5.1"
@@ -45,3 +46,7 @@ tray-icon = { version = "0.26", optional = true, default-features = false, featu
 ureq = "3.5.0"
 webpki-roots = "1.0.10"
 
+
+# Unter Linux über X11 (auch XWayland) starten, siehe src/desktop/main.rs
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", optional = true, default-features = false, features = ["x11"] }

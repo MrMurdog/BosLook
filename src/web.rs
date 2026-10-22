@@ -73,6 +73,7 @@ impl App {
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(|| async { Html(include_str!("web/index.html")) }))
+        .route("/icon.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../images/icon.svg")) }))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))

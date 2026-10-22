@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use client::{FromClient, ToClient};
 use config::DesktopConfig;
 use eframe::egui::{self, Color32, RichText};
+use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 
@@ -47,10 +48,7 @@ fn main() -> eframe::Result {
     if let Some(Command::Popup { title, body, emergency }) = cli.command {
         return popup(title, body, emergency);
     }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("BosLook").with_inner_size([1000.0, 650.0]).with_icon(icon()),
-        ..Default::default()
-    };
+    let options = options(egui::ViewportBuilder::default().with_title("BosLook").with_inner_size([1000.0, 650.0]));
     eframe::run_native("BosLook", options, Box::new(|cc| Ok(Box::new(App::new(cli.config, &cc.egui_ctx)))))
 }
 
@@ -188,21 +186,59 @@ impl App {
         let Some(active) = self.active.clone() else { return };
         self.unread.remove(&active);
         ui.separator();
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            egui::Grid::new("rows").striped(true).num_columns(5).spacing([12.0, 6.0]).show(ui, |ui| {
-                for h in ["Zeit", "Art", "Adresse", "Sub", "Meldung"] {
-                    ui.label(RichText::new(h).strong());
-                }
-                ui.end_row();
-                for t in self.rows.get(&active).into_iter().flatten() {
-                    ui.label(t.time.format("%d.%m.%Y %H:%M:%S").to_string());
-                    ui.label(RichText::new(t.kind.as_str().to_uppercase()).strong().color(Color32::WHITE).background_color(kind_color(t.kind)));
-                    ui.monospace(&t.address);
-                    ui.monospace(&t.sub);
-                    ui.add(egui::Label::new(&t.message).wrap());
-                    ui.end_row();
-                }
-            });
+        // Spaltenbreiten lassen sich mit der Maus ziehen und bleiben über Neustarts erhalten
+        let line = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+        let fixed = |width: f32| Column::initial(width).at_least(30.0).clip(true);
+        // Werden die Spalten breiter als das Fenster, lässt sich waagerecht scrollen
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            TableBuilder::new(ui)
+                .id_salt("rows")
+                .striped(true)
+                .resizable(true)
+                .auto_shrink(false)
+                .column(fixed(150.0))
+                .column(fixed(70.0))
+                .column(fixed(90.0))
+                .column(fixed(60.0))
+                .column(Column::remainder().at_least(100.0))
+                .header(line, |mut header| {
+                    for h in ["Zeit", "Art", "Adresse", "Sub", "Meldung"] {
+                        header.col(|ui| {
+                            ui.strong(h);
+                        });
+                    }
+                })
+                .body(|mut body| {
+                    let rows: Vec<&Telegram> = self.rows.get(&active).into_iter().flatten().collect();
+                    // Lange Meldungen werden umgebrochen, die Zeile wächst mit
+                    let width = body.widths()[4];
+                    let ui = body.ui_mut();
+                    let heights: Vec<f32> = rows
+                        .iter()
+                        .map(|t| {
+                            let galley = egui::WidgetText::from(t.message.as_str()).into_galley(ui, Some(egui::TextWrapMode::Wrap), width, egui::TextStyle::Body);
+                            line.max(galley.size().y + 6.0)
+                        })
+                        .collect();
+                    body.heterogeneous_rows(heights.into_iter(), |mut row| {
+                        let t = rows[row.index()];
+                        row.col(|ui| {
+                            ui.label(t.time.format("%d.%m.%Y %H:%M:%S").to_string());
+                        });
+                        row.col(|ui| {
+                            ui.label(RichText::new(t.kind.as_str().to_uppercase()).strong().color(Color32::WHITE).background_color(kind_color(t.kind)));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&t.address);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&t.sub);
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::Label::new(&t.message).wrap());
+                        });
+                    });
+                });
         });
     }
 
@@ -279,11 +315,14 @@ impl eframe::App for App {
                 if ui.selectable_value(&mut self.view, View::Server, "Server-Konfiguration").clicked() && self.server_text.is_empty() {
                     self.send(ToClient::LoadServerConfig);
                 }
-                let color = if self.connected { Color32::from_rgb(0x43, 0xa0, 0x47) } else { Color32::from_rgb(0xc6, 0x28, 0x28) };
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(&self.status);
-                    ui.label(RichText::new("●").color(color));
-                });
+            });
+        });
+        // Statuszeile unten, damit lange Fehlermeldungen umbrechen statt die Reiter zu überdecken
+        egui::Panel::bottom("status").show(ui, |ui| {
+            let color = if self.connected { Color32::from_rgb(0x43, 0xa0, 0x47) } else { Color32::from_rgb(0xc6, 0x28, 0x28) };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("●").color(color));
+                ui.label(&self.status);
             });
         });
         egui::CentralPanel::default_margins().show(ui, |ui| match self.view {
@@ -309,30 +348,24 @@ fn kind_color(kind: Kind) -> Color32 {
     }
 }
 
-/// Rotes Rundsymbol für Fenster und Infobereich.
-fn icon_rgba() -> (Vec<u8>, u32) {
-    const SIZE: u32 = 32;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let (dx, dy) = (x as f32 - 15.5, y as f32 - 15.5);
-            let r = (dx * dx + dy * dy).sqrt();
-            let pixel = if r < 9.0 {
-                [0xff, 0xff, 0xff, 0xff]
-            } else if r < 15.5 {
-                [0xc6, 0x28, 0x28, 0xff]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba.extend(pixel);
-        }
-    }
-    (rgba, SIZE)
+/// Symbol für Fenster und Infobereich (aus images/icon.svg erzeugt)
+fn icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("icon.png")).expect("icon.png")
 }
 
-fn icon() -> egui::IconData {
-    let (rgba, size) = icon_rgba();
-    egui::IconData { rgba, width: size, height: size }
+/// Unter Wayland kann winit Fenster weder verstecken noch im Vordergrund halten.
+/// Deshalb unter Linux X11 nutzen (unter Wayland über XWayland), sofern vorhanden.
+fn options(viewport: egui::ViewportBuilder) -> eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions { viewport: viewport.with_icon(icon()), ..Default::default() };
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_x11();
+        }));
+    }
+    options
 }
 
 /// Symbol im Infobereich mit Menü „Anzeigen" / „Beenden". Ohne Infobereich beendet das
@@ -367,8 +400,8 @@ fn tray(ctx: &egui::Context) -> (Option<tray_icon::TrayIcon>, mpsc::Receiver<Tra
             click_ctx.request_repaint();
         }
     }));
-    let (rgba, size) = icon_rgba();
-    let tray = tray_icon::Icon::from_rgba(rgba, size, size).ok().and_then(|icon| {
+    let icon = icon();
+    let tray = tray_icon::Icon::from_rgba(icon.rgba, icon.width, icon.height).ok().and_then(|icon| {
         tray_icon::TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("BosLook").with_icon(icon).build().ok()
     });
     (tray, rx)
@@ -376,14 +409,7 @@ fn tray(ctx: &egui::Context) -> (Option<tray_icon::TrayIcon>, mpsc::Receiver<Tra
 
 /// Alarmfenster im Vordergrund, bleibt bis zum Quittieren.
 fn popup(title: String, body: String, emergency: bool) -> eframe::Result {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(format!("BosLook – {title}"))
-            .with_inner_size([520.0, 300.0])
-            .with_always_on_top()
-            .with_icon(icon()),
-        ..Default::default()
-    };
+    let options = options(egui::ViewportBuilder::default().with_title(format!("BosLook – {title}")).with_inner_size([520.0, 300.0]).with_always_on_top());
     eframe::run_native(
         "BosLook Alarm",
         options,
