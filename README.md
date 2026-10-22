@@ -26,7 +26,9 @@ Ausgabe (tab-getrennt): Position in der Datei, Art, Adresse, Sub, Meldung.
 
 POCSAG-Meldungen werden als Text dargestellt. Mit `-p numeric` immer als Ziffern, mit
 `-p auto` bei Sub a als Ziffern und sonst als Text. In der Konfiguration geht das pro
-Eingang mit `pocsag = "..."`.
+Eingang mit `pocsag = "..."`. Ist ein Codewort mitten in einer Meldung so gestört, dass es sich
+nicht mehr korrigieren lässt, stehen dort `�` (etwa drei Zeichen) und die Meldung geht danach
+weiter; so bleiben z. B. auch verschlüsselte Meldungen bis auf diese Stelle lesbar.
 
 ## Server mit Weboberfläche
 

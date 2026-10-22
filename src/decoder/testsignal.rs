@@ -32,7 +32,7 @@ pub struct PocsagMsg<'a> {
     pub numeric: bool,
 }
 
-fn message_words(m: &PocsagMsg) -> Vec<u32> {
+pub fn message_words(m: &PocsagMsg) -> Vec<u32> {
     let mut bits: Vec<u32> = Vec::new();
     if m.numeric {
         for c in m.text.chars() {

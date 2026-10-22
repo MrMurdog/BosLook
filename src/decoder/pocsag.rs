@@ -121,7 +121,8 @@ enum State {
 struct Message {
     address: u32,
     function: u32,
-    data: Vec<u32>,
+    /// `None` = nicht korrigierbares Codewort, im Text als `�`
+    data: Vec<Option<u32>>,
 }
 
 pub struct Pocsag {
@@ -129,6 +130,8 @@ pub struct Pocsag {
     shreg: u32,
     state: State,
     message: Option<Message>,
+    /// Nicht korrigierbare Codewörter seit dem letzten guten der laufenden Meldung
+    damaged: usize,
     format: Format,
 }
 
@@ -139,6 +142,7 @@ impl Pocsag {
             shreg: 0,
             state: State::Hunt,
             message: None,
+            damaged: 0,
             format,
         }
     }
@@ -176,7 +180,11 @@ impl Pocsag {
 
     fn codeword(&mut self, cw: u32, frame: u32, out: &mut Vec<Decoded>) {
         let Some(cw) = correct(cw) else {
-            self.flush(out);
+            // Erst übernehmen, wenn danach noch Daten derselben Meldung kommen; so bleibt der
+            // Rest lesbar (wichtig z. B. für verschlüsselte Meldungen), ohne Müll am Ende
+            if self.message.is_some() {
+                self.damaged += 1;
+            }
             return;
         };
         if cw == IDLE {
@@ -189,11 +197,13 @@ impl Pocsag {
                 data: Vec::new(),
             });
         } else if let Some(m) = &mut self.message {
-            m.data.push((cw >> 11) & 0xFFFFF);
+            m.data.extend(std::iter::repeat_n(None, std::mem::take(&mut self.damaged)));
+            m.data.push(Some((cw >> 11) & 0xFFFFF));
         }
     }
 
     fn flush(&mut self, out: &mut Vec<Decoded>) {
+        self.damaged = 0;
         let Some(m) = self.message.take() else { return };
         let message = if m.data.is_empty() {
             String::new()
@@ -225,10 +235,14 @@ impl Decoder for Pocsag {
     }
 }
 
-fn numeric(data: &[u32]) -> String {
+fn numeric(data: &[Option<u32>]) -> String {
     const CHARS: &[u8; 16] = b"0123456789*U -)(";
     let mut s = String::new();
     for &d in data {
+        let Some(d) = d else {
+            s.push_str("�����");
+            continue;
+        };
         for n in (0..5).rev() {
             let nibble = ((d >> (n * 4)) & 0xF) as u8;
             s.push(CHARS[(nibble.reverse_bits() >> 4) as usize] as char);
@@ -243,26 +257,33 @@ const CONTROL_NAMES: [&str; 32] = [
     "FS", "GS", "RS", "US",
 ];
 
-fn alpha(data: &[u32]) -> String {
+fn alpha(data: &[Option<u32>]) -> String {
+    // `None` = Zeichen mit Bits aus einem gestörten Codewort
     let mut chars = Vec::new();
-    let (mut acc, mut nbits) = (0u32, 0);
+    let (mut acc, mut nbits, mut damaged) = (0u32, 0, false);
     for &d in data {
         for i in (0..20).rev() {
-            acc = (acc << 1) | ((d >> i) & 1);
+            acc = (acc << 1) | ((d.unwrap_or(0) >> i) & 1);
+            damaged |= d.is_none();
             nbits += 1;
             if nbits == 7 {
                 // 7-Bit-Zeichen werden LSB zuerst übertragen
-                chars.push((acc as u8).reverse_bits() >> 1);
+                chars.push((!damaged).then_some((acc as u8).reverse_bits() >> 1));
                 acc = 0;
                 nbits = 0;
+                damaged = false;
             }
         }
     }
-    while matches!(chars.last(), Some(0) | Some(4)) {
+    while matches!(chars.last(), Some(Some(0) | Some(4))) {
         chars.pop();
     }
     let mut s = String::new();
     for c in chars {
+        let Some(c) = c else {
+            s.push('�');
+            continue;
+        };
         match c {
             0..=31 => {
                 s.push('<');
@@ -323,6 +344,27 @@ mod tests {
             let got: Vec<_> = got.into_iter().map(|d| (d.address, d.sub, d.message)).collect();
             assert_eq!(got, want, "baud={baud} sr={sr} inverted={inverted}");
         }
+    }
+
+    #[test]
+    fn damaged_codeword_inside_message_keeps_the_rest() {
+        let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let words = testsignal::message_words(&testsignal::PocsagMsg { ric: 1234567, function: 1, text, numeric: false });
+        let run = |damage: usize| {
+            let mut d = Pocsag::new(1200, 22050, Format::Alpha);
+            let mut out = Vec::new();
+            d.codeword(testsignal::pocsag_codeword(((1234567 >> 3) << 2) | 1), 1234567 & 7, &mut out);
+            for (i, &w) in words.iter().enumerate() {
+                // Drei Bitfehler sind nicht mehr zu korrigieren
+                d.codeword(if i == damage { w ^ 0b111 << 12 } else { w }, 0, &mut out);
+            }
+            d.codeword(IDLE, 0, &mut out);
+            out.pop().unwrap().message
+        };
+        // Codewort 3 = Bits 60..80 = Zeichen 8..=11
+        assert_eq!(run(3), "ABCDEFGH����MNOPQRSTUVWXYZ");
+        // Am Ende gestört: die Meldung endet dort wie bisher, ohne Platzhalter
+        assert!(!run(words.len() - 1).contains('�'));
     }
 
     #[test]
