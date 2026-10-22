@@ -7,6 +7,8 @@ pub enum Kind {
     Pocsag,
     Fms,
     Zvei,
+    /// Wetterwarnung des DWD
+    Wetter,
 }
 
 impl Kind {
@@ -15,6 +17,7 @@ impl Kind {
             Kind::Pocsag => "pocsag",
             Kind::Fms => "fms",
             Kind::Zvei => "zvei",
+            Kind::Wetter => "wetter",
         }
     }
 
@@ -23,6 +26,7 @@ impl Kind {
             "pocsag" => Some(Kind::Pocsag),
             "fms" => Some(Kind::Fms),
             "zvei" => Some(Kind::Zvei),
+            "wetter" => Some(Kind::Wetter),
             _ => None,
         }
     }
@@ -32,11 +36,11 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoded {
     pub kind: Kind,
-    /// POCSAG: RIC, FMS: 8-stellige Kennung, ZVEI: 5-Ton-Folge
+    /// POCSAG: RIC, FMS: 8-stellige Kennung, ZVEI: 5-Ton-Folge, Wetter: Gebiet
     pub address: String,
-    /// POCSAG: Unteradresse a-d, FMS: Status (0-F), ZVEI: leer
+    /// POCSAG: Unteradresse a-d, FMS: Status (0-F), ZVEI: leer, Wetter: Warnstufe 1-5
     pub sub: String,
-    /// POCSAG: Meldungstext, FMS: Status-/Richtungstext, ZVEI: leer
+    /// POCSAG: Meldungstext, FMS: Status-/Richtungstext, ZVEI: leer, Wetter: Warnung
     pub message: String,
 }
 

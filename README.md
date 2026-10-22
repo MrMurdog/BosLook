@@ -1,7 +1,7 @@
 # BosLook
 
 Dekodiert ZVEI-, FMS- und POCSAG-Telegramme (512/1200 Baud) aus dem Audiosignal eines
-Funkempfängers, speichert sie in SQLite und zeigt sie live in einer Weboberfläche an,
+Funkempfängers, holt Wetterwarnungen des DWD ab, speichert sie in SQLite und zeigt sie live in einer Weboberfläche an,
 mit einem eigenen Reiter pro Quelle. Läuft unter Linux und Windows.
 
 > Das Abhören und Auswerten von BOS-Funk ist nur Berechtigten erlaubt.
@@ -85,6 +85,22 @@ Regeln auf ein Telegramm, bekommt jedes Ziel trotzdem nur eine Nachricht. Beispi
 
 ```sh
 boslook test-notify            # Testnachricht an alle Ziele senden
+```
+
+Gleiche Telegramme werden innerhalb von 60 Sekunden nur einmal gemeldet, weil Alarme oft
+wiederholt gesendet werden (`notify_repeat`). Mit `priority = "high"` oder `"emergency"` in der
+Alarmregel kommen Pushover-Nachrichten auch bei „Nicht stören" bzw. so lange, bis sie
+bestätigt werden.
+
+## Wetterwarnungen
+
+Warnungen des Deutschen Wetterdienstes für die Gebiete unter `[weather]` erscheinen im Reiter
+„Wetter". Sie lassen sich mit `kind = "wetter"` filtern und für Alarmregeln verwenden; `sub` ist
+die Warnstufe (1 Vorabinformation, 2 Wetterwarnung, 3 markantes Wetter, 4 Unwetter,
+5 extremes Unwetter).
+
+```sh
+boslook warncell Leipzig       # Warncell-ID für die Konfiguration suchen
 ```
 
 ## Weiterleitung an einen Server

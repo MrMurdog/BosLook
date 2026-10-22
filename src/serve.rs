@@ -38,6 +38,11 @@ pub async fn run(config_path: &str) -> Result<()> {
         }
         Bank::new(&i.decoders, 22050, i.pocsag).with_context(|| format!("Eingang '{}'", i.name))?;
     }
+    if let Some(w) = &config.weather
+        && (w.warncells.is_empty() || w.interval < 60)
+    {
+        bail!("[weather]: mindestens eine Warncell-ID und interval von mindestens 60 Sekunden angeben");
+    }
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let filters = Arc::new(Filters::new(&config.filters)?);
     let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
@@ -48,7 +53,12 @@ pub async fn run(config_path: &str) -> Result<()> {
         db,
         Settings {
             users: config.users,
-            inputs: config.inputs.iter().map(|i| i.name.clone()).collect(),
+            inputs: config
+                .inputs
+                .iter()
+                .map(|i| i.name.clone())
+                .chain(config.weather.as_ref().map(|_| crate::weather::SOURCE.to_string()))
+                .collect(),
             secure_cookie: config.web.as_ref().is_some_and(|w| w.tls != Tls::Off),
             clients: config.clients,
             ingest: tx.clone(),
@@ -62,6 +72,10 @@ pub async fn run(config_path: &str) -> Result<()> {
                 eprintln!("Eingang '{}': {e:#}", i.name);
             }
         });
+    }
+    if let Some(weather) = config.weather {
+        let (filters, tx, app) = (filters.clone(), tx.clone(), app.clone());
+        std::thread::spawn(move || crate::weather::run(&weather, &filters, &app.db, &tx));
     }
     drop(tx);
 

@@ -7,12 +7,12 @@
 <style>
   :root {
     --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea;
-    --accent: #c62828; --pocsag: #c62828; --fms: #1565c0; --zvei: #2e7d32; --new: #fff6d6;
+    --accent: #c62828; --pocsag: #c62828; --fms: #1565c0; --zvei: #2e7d32; --wetter: #ef6c00; --new: #fff6d6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c;
-      --accent: #ef5350; --pocsag: #ef5350; --fms: #64b5f6; --zvei: #81c784; --new: #3a3420;
+      --accent: #ef5350; --pocsag: #ef5350; --fms: #64b5f6; --zvei: #81c784; --wetter: #ffb74d; --new: #3a3420;
     }
   }
   * { box-sizing: border-box; }
@@ -40,7 +40,7 @@
   td.addr { font-family: ui-monospace, monospace; white-space: nowrap; }
   td.msg { word-break: break-word; min-width: 16em; }
   .kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; color: #fff; }
-  .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); }
+  .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); } .kind.wetter { background: var(--wetter); }
   tr.new { background: var(--new); transition: background 3s; }
   .more { margin: 12px auto; display: block; }
   #login { max-width: 320px; margin: 15vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; }

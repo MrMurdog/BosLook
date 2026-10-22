@@ -25,6 +25,8 @@ pub struct Config {
     pub notifiers: Vec<NotifierConfig>,
     #[serde(default, rename = "alarm")]
     pub alarms: Vec<AlarmConfig>,
+    /// Wetterwarnungen des DWD
+    pub weather: Option<crate::weather::WeatherConfig>,
     /// Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen (0 = aus)
     #[serde(default = "default_notify_repeat")]
     pub notify_repeat: u64,
@@ -148,6 +150,7 @@ mod tests {
         assert_eq!(c.clients[0].name, "Zuhause");
         assert_eq!(c.notifiers.len(), 3);
         assert_eq!(c.alarms[0].notify, ["Handy", "Leitstelle"]);
+        assert_eq!(c.weather.unwrap().warncells, ["114713000"]);
     }
 
     #[test]

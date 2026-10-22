@@ -15,6 +15,13 @@ tls = "self-signed"
 cert = "boslook-cert.pem"
 key = "boslook-key.pem"
 
+# Wetterwarnungen des DWD, erscheinen im Reiter "Wetter" und können mit kind = "wetter"
+# in Filtern und Alarmregeln verwendet werden (sub = Warnstufe, z. B. sub = "[45]" für
+# Unwetter und extremes Unwetter). Warncell-ID suchen mit: boslook warncell Leipzig
+[weather]
+warncells = ["114713000"]
+interval = 300            # Abfrage alle 300 Sekunden
+
 # Benutzer für die Weboberfläche. Hash erzeugen mit: boslook hash-password
 [[user]]
 name = "admin"

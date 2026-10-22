@@ -30,6 +30,12 @@ impl Db {
         Ok(self.0.last_insert_rowid())
     }
 
+    /// Ob genau dieses Telegramm schon gespeichert ist (unabhängig von Zeit und Quelle).
+    pub fn contains(&self, kind: Kind, address: &str, message: &str) -> Result<bool> {
+        let mut stmt = self.0.prepare("SELECT 1 FROM telegrams WHERE kind = ?1 AND address = ?2 AND message = ?3 LIMIT 1")?;
+        Ok(stmt.exists(params![kind.as_str(), address, message])?)
+    }
+
     /// Alle Quellen, von denen Telegramme gespeichert sind.
     pub fn sources(&self) -> Result<Vec<String>> {
         let mut stmt = self.0.prepare("SELECT DISTINCT source FROM telegrams ORDER BY source")?;

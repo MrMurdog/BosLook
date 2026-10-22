@@ -7,6 +7,7 @@ mod input;
 mod notify;
 mod serve;
 mod telegram;
+mod weather;
 mod web;
 
 use anyhow::Result;
@@ -42,6 +43,8 @@ enum Command {
         #[arg(short, long, default_value = "boslook.toml")]
         config: String,
     },
+    /// Warncell-ID für Wetterwarnungen suchen, z. B. `boslook warncell Leipzig`
+    Warncell { name: String },
     /// Aufnahmegeräte (Soundkarten) auflisten
     Devices,
     /// Passwort-Hash für die Konfiguration erzeugen (Passwort wird von stdin gelesen)
@@ -53,6 +56,7 @@ fn main() -> Result<()> {
         Command::Decode { file, decoders, pocsag } => decode(&file, &decoders, pocsag),
         Command::Serve { config } => tokio::runtime::Runtime::new()?.block_on(serve::run(&config)),
         Command::TestNotify { config } => test_notify(&config),
+        Command::Warncell { name } => weather::search(&name),
         Command::Devices => input::list_devices(),
         Command::HashPassword => hash_password(),
     }
