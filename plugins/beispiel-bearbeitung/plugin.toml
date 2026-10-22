@@ -1,0 +1,15 @@
+name = "beispiel-bearbeitung"
+version = "1.0.0"
+description = "Ersetzt Abkürzungen in der Meldung, z. B. FF → Freiwillige Feuerwehr (Vorlage für eigene Bearbeiten-Plugins)"
+author = "BosLook"
+api = 1
+# Vorher bauen: cargo build --release (in diesem Ordner)
+command = ["target/release/beispiel-bearbeitung"]
+command_windows = ["target/release/beispiel-bearbeitung.exe"]
+capabilities = ["process"]
+
+[[field]]
+key = "ersetzungen"
+label = "Ersetzungen"
+input = "lines"
+help = "Eine je Zeile: Abkürzung=Langform, z. B. FF=Freiwillige Feuerwehr"

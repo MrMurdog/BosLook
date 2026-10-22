@@ -121,3 +121,9 @@ notify = ["Handy", "Leitstelle"]
 priority = "high"
 # title = "{kurz}"
 # text = "{ort}: {message} ({time})"
+
+# Plugins: Ordner unter plugins/ neben dieser Datei, Abschnitt = eingeschaltet.
+# Doku: docs/index.md. Ein Plugin mit Benachrichtigungsart ist ein weiterer
+# Dienst unter [[notifier]], z. B. type = "webhook".
+# [plugin.webhook]
+# timeout = 10

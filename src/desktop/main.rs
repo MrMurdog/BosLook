@@ -97,6 +97,8 @@ struct App {
     /// Anfrage an den Server läuft, nicht nochmal laden
     server_loading: bool,
     descriptions: descriptions::Window,
+    /// Adresse der Weboberfläche des Servers, für Seiten, die im Browser aufgehen
+    server_url: Option<String>,
     /// Ausgeblendete Spalten (Schlüssel aus `COLUMNS`)
     hidden: Vec<String>,
     tray: Option<tray_icon::TrayIcon>,
@@ -131,6 +133,7 @@ impl App {
             server: Editor::default(),
             server_loading: false,
             descriptions: descriptions::Window::default(),
+            server_url: None,
             hidden,
             tray,
             tray_rx,
@@ -144,6 +147,7 @@ impl App {
             Ok(c) if c.server.password != "ERSETZEN" => match events::Events::new(&c.events, c.repeat) {
                 Ok(events) => {
                     let ctx = ctx.clone();
+                    app.server_url = Some(c.server.url.trim_end_matches('/').to_string());
                     app.cmd = Some(client::spawn(c.server, events, tx, move || ctx.request_repaint()));
                 }
                 Err(e) => app.open_settings(format!("Fehler: {e:#}")),
@@ -428,6 +432,11 @@ impl eframe::App for App {
                 ui.separator();
                 if ui.button("Beschreibungen").clicked() {
                     self.descriptions.show(ui.ctx());
+                }
+                if let Some(url) = &self.server_url
+                    && ui.button("Plugins").on_hover_text("Öffnet die Seite im Browser").clicked()
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins")));
                 }
                 if self.view == View::Telegrams {
                     // Offen lassen, damit mehrere Spalten auf einmal umgeschaltet werden können

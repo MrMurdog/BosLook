@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "boslook"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5648,6 +5648,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

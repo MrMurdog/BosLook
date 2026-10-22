@@ -1,5 +1,5 @@
 use anyhow::Result;
-use boslook::{config, decoder, input, notify, serve, telegram, weather};
+use boslook::{config, decoder, input, notify, plugin, serve, telegram, weather};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -50,13 +50,21 @@ fn main() -> Result<()> {
     }
 }
 
-fn test_notify(config: &str) -> Result<()> {
-    let config = config::Config::load(config)?;
+fn test_notify(path: &str) -> Result<()> {
+    let config = config::Config::load(path)?;
     if config.notifiers.is_empty() {
         anyhow::bail!("Keine [[notifier]] konfiguriert");
     }
+    // Dienste von Plugins brauchen die laufenden Plugins
+    let runtime = tokio::runtime::Runtime::new()?;
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let plugins = runtime.block_on(async { plugin::Plugins::start(&config, &plugin::dir(path), tx) })?;
     for n in &config.notifiers {
-        match notify::send(&n.target, "BosLook Test", "Testnachricht von BosLook", notify::Priority::Normal) {
+        let sender = {
+            let _runtime = runtime.enter();
+            notify::Sender::new(&n.target, &plugins)
+        };
+        match sender.send(n, "BosLook Test", "Testnachricht von BosLook", notify::Priority::Normal, None) {
             Ok(()) => println!("{}: gesendet", n.name),
             Err(e) => println!("{}: Fehler: {e:#}", n.name),
         }

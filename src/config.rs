@@ -30,6 +30,9 @@ pub struct Config {
     pub alarms: Vec<AlarmConfig>,
     /// Wetterwarnungen des DWD
     pub weather: Option<crate::weather::WeatherConfig>,
+    /// Einstellungen der Plugins: `[plugin.<name>]`, in der Reihenfolge der Datei
+    #[serde(default, rename = "plugin", deserialize_with = "plugin_tables")]
+    pub plugins: Vec<(String, toml::Table)>,
     /// Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen (0 = aus)
     #[serde(default = "default_notify_repeat")]
     pub notify_repeat: u64,
@@ -108,6 +111,18 @@ pub enum Source {
     Stdin { sample_rate: u32 },
     /// Soundkarte; `device` wie von `boslook devices` angezeigt, sonst das Standardgerät
     Soundcard { device: Option<String> },
+}
+
+fn plugin_tables<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, toml::Table)>, D::Error> {
+    use serde::de::Error;
+    let table = toml::Table::deserialize(d)?;
+    table
+        .into_iter()
+        .map(|(name, value)| match value {
+            toml::Value::Table(t) => Ok((name, t)),
+            _ => Err(D::Error::custom(format!("plugin.{name} muss ein Abschnitt [plugin.{name}] sein"))),
+        })
+        .collect()
 }
 
 fn default_database() -> String {

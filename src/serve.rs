@@ -1,10 +1,11 @@
-//! `boslook serve`: Eingänge dekodieren, bearbeiten, filtern, speichern und per Weboberfläche anzeigen.
+//! `boslook serve`: Eingänge dekodieren, mit Plugins und Regeln bearbeiten, filtern, speichern und per Weboberfläche anzeigen.
 
 use crate::config::{Config, InputConfig, Source, Tls};
 use crate::db::Db;
 use crate::decoder::Bank;
 use crate::filter::Filters;
 use crate::notify::Notify;
+use crate::plugin::Plugins;
 use crate::rewrite::Rewrites;
 use crate::telegram::{Decoded, Telegram};
 use crate::web::{self, App, Settings};
@@ -19,7 +20,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Prüft die Konfiguration, ohne etwas zu starten (auch für den Config-Editor).
-pub fn validate(config: &Config) -> Result<()> {
+/// `plugins` ist der Ordner der Plugins (siehe [`crate::plugin::dir`]).
+pub fn validate(config: &Config, plugins: &Path) -> Result<()> {
     if config.web.is_some() && config.users.is_empty() {
         bail!("Kein Benutzer konfiguriert. Passwort-Hash erzeugen mit: boslook hash-password");
     }
@@ -48,6 +50,7 @@ pub fn validate(config: &Config) -> Result<()> {
     Rewrites::new(&config.rewrites)?;
     Filters::new(&config.filters)?;
     crate::notify::check(&config.alarms, &config.notifiers)?;
+    crate::plugin::check(config, &crate::plugin::manifests(plugins).0)?;
     Ok(())
 }
 
@@ -57,14 +60,16 @@ pub async fn run(config_path: &str) -> Result<()> {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     let config = Config::load(config_path)?;
-    validate(&config)?;
+    let plugin_dir = crate::plugin::dir(config_path);
+    validate(&config, &plugin_dir)?;
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let rewrites = Rewrites::new(&config.rewrites)?;
     let filters = Filters::new(&config.filters)?;
-    let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);
+    let plugins = Arc::new(Plugins::start(&config, &plugin_dir, tx.clone())?);
+    let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat), &plugins)?;
     let app = Arc::new(App::new(
         db,
         Settings {
@@ -74,11 +79,13 @@ pub async fn run(config_path: &str) -> Result<()> {
                 .iter()
                 .map(|i| i.name.clone())
                 .chain(config.weather.as_ref().map(|_| crate::weather::SOURCE.to_string()))
+                .chain(plugins.sources())
                 .collect(),
             secure_cookie: config.web.as_ref().is_some_and(|w| w.tls != Tls::Off),
             clients: config.clients,
             config_path: config_path.to_string(),
             ingest: tx.clone(),
+            plugins: plugins.clone(),
         },
     ));
     for i in config.inputs {
@@ -103,7 +110,9 @@ pub async fn run(config_path: &str) -> Result<()> {
 
     let store = app.clone();
     tokio::spawn(async move {
-        while let Some(mut t) = rx.recv().await {
+        while let Some(t) = rx.recv().await {
+            // Bearbeiten-Plugins zuerst, damit Regeln und Filter z. B. schon entschlüsselten Text sehen
+            let Some(mut t) = plugins.process(t).await else { continue };
             // Erst nachschlagen und bearbeiten, dann filtern: Filter können auch Ort und Beschreibungen prüfen
             {
                 let db = store.db.lock().unwrap();
@@ -120,6 +129,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             }
             println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
             notify.handle(&t);
+            plugins.observe(&t);
             let _ = store.live.send(t.clone());
             if let Some(forward) = &forward {
                 let _ = forward.send(t).await;

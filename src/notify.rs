@@ -1,21 +1,45 @@
-//! Benachrichtigungen per Telegram, E-Mail und Pushover.
+//! Benachrichtigungen per Telegram, E-Mail, Pushover und Plugins.
 //!
 //! `[[notifier]]` beschreibt ein Ziel, `[[alarm]]` eine Regel (Felder wie bei den Filtern),
 //! die bei passenden Telegrammen die genannten Ziele benachrichtigt.
 
 use crate::filter::{Filter, FilterConfig};
+use crate::plugin::{Plugin, Plugins};
 use crate::telegram::{Kind, Telegram};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
+#[serde(try_from = "toml::Table")]
 pub struct NotifierConfig {
     pub name: String,
-    #[serde(flatten)]
     pub target: Target,
+}
+
+/// `type` ist ein eingebauter Dienst oder der Name eines Plugins mit der Fähigkeit `notify`.
+impl TryFrom<toml::Table> for NotifierConfig {
+    type Error = String;
+
+    fn try_from(mut table: toml::Table) -> Result<NotifierConfig, String> {
+        let name = match table.remove("name") {
+            Some(toml::Value::String(name)) => name,
+            _ => return Err("notifier: name fehlt".into()),
+        };
+        let kind = table.get("type").and_then(toml::Value::as_str).map(str::to_string);
+        let target = match kind.as_deref() {
+            Some("telegram" | "pushover" | "email") => table.try_into().map_err(|e: toml::de::Error| format!("notifier '{name}': {}", e.message()))?,
+            Some(_) => {
+                let plugin = kind.expect("type");
+                table.remove("type");
+                Target::Plugin { plugin, settings: table }
+            }
+            None => return Err(format!("notifier '{name}': type fehlt")),
+        };
+        Ok(NotifierConfig { name, target })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +60,9 @@ pub enum Target {
         from: String,
         to: Vec<String>,
     },
+    /// Dienst eines Plugins; `settings` sind die übrigen Einträge des Ziels
+    #[serde(skip)]
+    Plugin { plugin: String, settings: toml::Table },
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -49,7 +76,7 @@ pub enum Security {
 }
 
 /// Bei Pushover: high = Ton auch bei „Nicht stören", emergency = wiederholt, bis bestätigt.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
     #[default]
@@ -91,7 +118,7 @@ struct Alarm {
 /// Jedes Ziel sendet in einem eigenen Thread, damit ein langsamer Dienst die anderen nicht aufhält.
 pub struct Notify {
     alarms: Vec<Alarm>,
-    senders: Vec<mpsc::Sender<(String, String, Priority)>>,
+    senders: Vec<mpsc::Sender<(String, String, Priority, Telegram)>>,
     repeats: Repeats,
 }
 
@@ -116,15 +143,17 @@ impl Repeats {
 }
 
 impl Notify {
-    pub fn new(alarms: &[AlarmConfig], notifiers: Vec<NotifierConfig>, repeat: Duration) -> Result<Notify> {
+    /// Muss innerhalb einer Tokio-Laufzeit aufgerufen werden (für Plugins).
+    pub fn new(alarms: &[AlarmConfig], notifiers: Vec<NotifierConfig>, repeat: Duration, plugins: &Plugins) -> Result<Notify> {
         let alarms = alarms.iter().map(|a| compile(a, &notifiers)).collect::<Result<_>>()?;
         let senders = notifiers
             .into_iter()
             .map(|n| {
-                let (tx, rx) = mpsc::channel::<(String, String, Priority)>();
+                let (tx, rx) = mpsc::channel::<(String, String, Priority, Telegram)>();
+                let sender = Sender::new(&n.target, plugins);
                 std::thread::spawn(move || {
-                    for (title, body, priority) in rx {
-                        if let Err(e) = send(&n.target, &title, &body, priority) {
+                    for (title, body, priority, t) in rx {
+                        if let Err(e) = sender.send(&n, &title, &body, priority, Some(&t)) {
                             eprintln!("Benachrichtigung '{}': {e:#}", n.name);
                         }
                     }
@@ -140,7 +169,31 @@ impl Notify {
             return;
         }
         for (target, title, body, priority) in targets(&self.alarms, t) {
-            let _ = self.senders[target].send((title, body, priority));
+            let _ = self.senders[target].send((title, body, priority, t.clone()));
+        }
+    }
+}
+
+/// Versand an ein Ziel: eingebaute Dienste direkt, Plugin-Dienste über ihr Plugin
+pub struct Sender {
+    plugin: Option<(Arc<Plugin>, tokio::runtime::Handle)>,
+}
+
+impl Sender {
+    /// Muss bei Plugin-Zielen innerhalb einer Tokio-Laufzeit aufgerufen werden.
+    pub fn new(target: &Target, plugins: &Plugins) -> Sender {
+        let plugin = match target {
+            Target::Plugin { plugin, .. } => plugins.get(plugin).map(|p| (p, tokio::runtime::Handle::current())),
+            _ => None,
+        };
+        Sender { plugin }
+    }
+
+    pub fn send(&self, n: &NotifierConfig, title: &str, body: &str, priority: Priority, t: Option<&Telegram>) -> Result<()> {
+        match (&n.target, &self.plugin) {
+            (Target::Plugin { settings, .. }, Some((plugin, runtime))) => plugin.notify_blocking(runtime, &n.name, settings, (title, body, priority), t),
+            (Target::Plugin { plugin, .. }, None) => bail!("Plugin '{plugin}' läuft nicht"),
+            (target, _) => send(target, title, body, priority),
         }
     }
 }
@@ -289,6 +342,7 @@ pub fn send(target: &Target, title: &str, body: &str, priority: Priority) -> Res
             mailer.build().send(&email)?;
             Ok(())
         }
+        Target::Plugin { plugin, .. } => bail!("Dienst des Plugins '{plugin}' nur über Sender"),
     }
 }
 

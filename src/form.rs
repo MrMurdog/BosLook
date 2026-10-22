@@ -131,10 +131,24 @@ pub fn priority_field(help: &'static str) -> Field {
     field("priority", "Priorität", Input::Select(PRIORITIES.to_vec())).default("normal").help(help)
 }
 
-/// Schema der `boslook.toml`
-pub fn server_schema() -> Vec<Section> {
+/// Schema der `boslook.toml` mit den Abschnitten und Benachrichtigungsdiensten der
+/// installierten Plugins
+pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
+    use crate::plugin::Capability;
     let name = || field("name", "Name", Input::Text).required();
-    vec![
+    let notifying = || plugins.iter().filter(|m| m.has(Capability::Notify));
+    // Fehlerhafte Felder sind schon beim Laden der Beschreibungen aufgefallen
+    let plugin_notifier_fields = notifying().flat_map(|m| m.notifier_fields().unwrap_or_default());
+    let plugin_sections = plugins.iter().map(|m| Section {
+        key: crate::plugin::intern(&format!("plugin.{}", m.name)),
+        title: crate::plugin::intern(&format!("Plugin: {}", m.name)),
+        help: crate::plugin::intern(&m.description),
+        kind: SectionKind::Optional,
+        fields: m.section_fields().unwrap_or_default(),
+    });
+    let mut types = vec!["telegram", "pushover", "email"];
+    types.extend(notifying().map(|m| crate::plugin::intern(&m.name)));
+    let sections = vec![
         Section {
             key: "",
             title: "Allgemein",
@@ -223,7 +237,7 @@ pub fn server_schema() -> Vec<Section> {
             kind: SectionKind::List,
             fields: vec![
                 name(),
-                field("type", "Dienst", Input::Select(vec!["telegram", "pushover", "email"])).required(),
+                field("type", "Dienst", Input::Select(types)).required(),
                 field("bot_token", "Bot-Token", Input::Password).required().when("type", &["telegram"]).help("Bot über @BotFather anlegen"),
                 field("chat_id", "Chat-ID", Input::Text).required().when("type", &["telegram"]),
                 field("token", "App-Token", Input::Password).required().when("type", &["pushover"]),
@@ -235,7 +249,10 @@ pub fn server_schema() -> Vec<Section> {
                 field("password", "Passwort", Input::Password).when("type", &["email"]),
                 field("from", "Absender", Input::Text).required().when("type", &["email"]),
                 field("to", "Empfänger", Input::Lines).required().when("type", &["email"]).help("Eine Adresse je Zeile"),
-            ],
+            ]
+            .into_iter()
+            .chain(plugin_notifier_fields)
+            .collect(),
         },
         Section {
             key: "alarm",
@@ -284,7 +301,16 @@ pub fn server_schema() -> Vec<Section> {
                 field("cert", "Zertifikat des Servers", Input::Text).help("nur bei tls = self-signed auf dem Server"),
             ],
         },
-    ]
+    ];
+    sections.into_iter().chain(plugin_sections).collect()
+}
+
+/// `plugin.name` → (`Some("plugin")`, `"name"`)
+fn split_key(key: &str) -> (Option<&str>, &str) {
+    match key.split_once('.') {
+        Some((parent, key)) => (Some(parent), key),
+        None => (None, key),
+    }
 }
 
 /// Werte der Datei für das Formular. Fehlende Felder bekommen ihren Standardwert,
@@ -302,6 +328,12 @@ pub fn to_json(text: &str, schema: &[Section]) -> Result<Value> {
         match s.kind {
             SectionKind::Root => defaults(&mut values),
             SectionKind::Table | SectionKind::Optional => {
+                // Unterabschnitte wie `[plugin.name]` stehen im Formular unter ihrem vollen Namen
+                if let (Some(parent), key) = split_key(s.key)
+                    && let Some(table) = values.get(parent).and_then(|p| p.get(key)).cloned()
+                {
+                    values[s.key] = table;
+                }
                 if let Some(table) = values.get_mut(s.key) {
                     defaults(table);
                 }
@@ -324,16 +356,34 @@ pub fn apply(text: &str, schema: &[Section], form: &Value) -> Result<String> {
         let value = form.get(s.key).filter(|v| !v.is_null());
         match s.kind {
             SectionKind::Root => fill(doc.as_table_mut(), &s.fields, form, s.title)?,
-            SectionKind::Table | SectionKind::Optional => match value {
-                None if s.kind == SectionKind::Optional => {
-                    doc.remove(s.key);
+            SectionKind::Table | SectionKind::Optional => {
+                let (parent, key) = split_key(s.key);
+                match (value, parent) {
+                    (None, None) if s.kind == SectionKind::Optional => {
+                        doc.remove(key);
+                    }
+                    (None, Some(parent)) if s.kind == SectionKind::Optional => {
+                        if let Some(p) = doc.get_mut(parent).and_then(Item::as_table_mut) {
+                            p.remove(key);
+                            if p.is_empty() {
+                                doc.remove(parent);
+                            }
+                        }
+                    }
+                    (None, _) => bail!("{}: Abschnitt fehlt", s.title),
+                    (Some(v), parent) => {
+                        let mut container = doc.as_table_mut();
+                        if let Some(parent) = parent {
+                            // Nur `[plugin.name]` schreiben, kein leeres `[plugin]` davor
+                            let mut implicit = Table::new();
+                            implicit.set_implicit(true);
+                            container = container.entry(parent).or_insert(Item::Table(implicit)).as_table_mut().with_context(|| format!("{parent} ist keine Tabelle"))?;
+                        }
+                        let table = container.entry(key).or_insert(toml_edit::table()).as_table_mut().with_context(|| format!("{} ist keine Tabelle", s.key))?;
+                        fill(table, &s.fields, v, s.title)?;
+                    }
                 }
-                None => bail!("{}: Abschnitt fehlt", s.title),
-                Some(v) => {
-                    let table = doc.entry(s.key).or_insert(toml_edit::table()).as_table_mut().with_context(|| format!("{} ist keine Tabelle", s.key))?;
-                    fill(table, &s.fields, v, s.title)?;
-                }
-            },
+            }
             SectionKind::List => {
                 let old: Vec<Table> = doc.get(s.key).and_then(Item::as_array_of_tables).map(|a| a.iter().cloned().collect()).unwrap_or_default();
                 let mut list = ArrayOfTables::new();
@@ -367,6 +417,10 @@ pub fn apply(text: &str, schema: &[Section], form: &Value) -> Result<String> {
 fn fill(table: &mut Table, fields: &[Field], item: &Value, context: &str) -> Result<()> {
     for f in fields {
         let old = table.get(f.key).and_then(item_to_json);
+        if !f.active(item) && fields.iter().any(|g| g.key == f.key && g.active(item)) {
+            // Gleicher Schlüssel bei einem anderen Dienst (z. B. eines Plugins), der gerade gilt
+            continue;
+        }
         let new = if f.active(item) { convert(f, item.get(f.key), old.as_ref(), context)? } else { None };
         let Some(new) = new else {
             if f.required && f.active(item) {
@@ -505,7 +559,7 @@ pocsag = "auto"
 "#;
 
     fn roundtrip(change: impl FnOnce(&mut Value)) -> Result<String> {
-        let schema = server_schema();
+        let schema = server_schema(&[]);
         let mut form = to_json(TEXT, &schema)?;
         change(&mut form);
         apply(TEXT, &schema, &form)
@@ -518,7 +572,7 @@ pocsag = "auto"
 
     #[test]
     fn defaults_are_filled_but_not_written() {
-        let form = to_json(TEXT, &server_schema()).unwrap();
+        let form = to_json(TEXT, &server_schema(&[])).unwrap();
         assert_eq!(form["notify_repeat"], 60);
         assert_eq!(form["input"][0]["pocsag"], "alpha");
         assert_eq!(form["input"][1]["_i"], 1);
@@ -585,7 +639,7 @@ pocsag = "auto"
     fn optional_section_can_be_added_and_removed() {
         let text = roundtrip(|f| f["weather"] = json!({"warncells": "114713000\n\n", "interval": "300"})).unwrap();
         assert!(text.contains("[weather]\nwarncells = [\"114713000\"]\n"), "{text}");
-        let schema = server_schema();
+        let schema = server_schema(&[]);
         let mut form = to_json(&text, &schema).unwrap();
         form["weather"] = Value::Null;
         assert!(!apply(&text, &schema, &form).unwrap().contains("weather"));
@@ -602,14 +656,14 @@ pocsag = "auto"
         assert_eq!((r.replace.len(), r.replace[1].with.as_str(), r.address_add), (2, " ", Some(-1000)), "{text}");
         assert!(text.contains("address_add = -1000\n\n[[rewrite.replace]]\npattern = '^F(\\d)'\nwith = \"Feuer $1\"\n"), "{text}");
         // Unverändert gespeichert bleibt der Text gleich
-        let schema = server_schema();
+        let schema = server_schema(&[]);
         assert_eq!(apply(&text, &schema, &to_json(&text, &schema).unwrap()).unwrap(), text);
     }
 
     #[test]
     fn example_config_roundtrips() {
         let text = include_str!("../boslook.example.toml");
-        let schema = server_schema();
+        let schema = server_schema(&[]);
         assert_eq!(apply(text, &schema, &to_json(text, &schema).unwrap()).unwrap(), text);
     }
 }

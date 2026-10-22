@@ -81,7 +81,7 @@ impl Rewrites {
             #[serde(default)]
             rewrite: Vec<RewriteConfig>,
         }
-        let schema: Vec<_> = crate::form::server_schema().into_iter().filter(|s| s.key == "rewrite").collect();
+        let schema: Vec<_> = crate::form::server_schema(&[]).into_iter().filter(|s| s.key == "rewrite").collect();
         let text = crate::form::apply("", &schema, &serde_json::json!({ "rewrite": rules }))?;
         Rewrites::new(&toml::from_str::<File>(&text)?.rewrite)
     }

@@ -97,6 +97,7 @@
     <span id="status" class="off">getrennt</span>
     <details id="columns"><summary class="button">Spalten</summary><div></div></details>
     <button id="descriptions-btn">Beschreibungen</button>
+    <button id="plugins-btn">Plugins</button>
     <button id="settings-btn">Einstellungen</button>
     <button id="logout">Abmelden</button>
   </header>
@@ -215,6 +216,7 @@ for (const c of COLUMNS) {
 }
 document.addEventListener("click", (e) => { if (!$("columns").contains(e.target)) $("columns").open = false; });
 $("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
+$("plugins-btn").onclick = () => window.open("/plugins", "_blank");
 
 function panel(source) {
   if (panels.has(source)) return panels.get(source);

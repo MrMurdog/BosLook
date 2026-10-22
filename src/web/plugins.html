@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugins – BosLook</title>
+<link rel="icon" href="/icon.svg">
+<style>
+  :root { --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea; --accent: #005795; --danger: #dd3127; --ok: #2e7d32; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c; --accent: #4a9be0; --danger: #ef5350; --ok: #66bb6a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 8px 0 0; font-size: 18px; } header h1 span { color: var(--accent); }
+  button, .button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; }
+  main { padding: 16px; max-width: 60rem; }
+  .help { color: var(--muted); margin: 0 0 14px; }
+  .plugin { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+  .plugin h2 { margin: 0; font-size: 16px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .plugin h2 small { color: var(--muted); font-weight: normal; font-size: 13px; }
+  .state { font-size: 13px; font-weight: 600; }
+  .state.on { color: var(--ok); } .state.off { color: var(--muted); } .state.err { color: var(--danger); }
+  .plugin p { margin: 6px 0; }
+  .caps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .caps span { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
+  details summary { cursor: pointer; color: var(--muted); margin-top: 6px; }
+  pre { margin: 6px 0 0; padding: 8px; max-height: 20rem; overflow: auto; background: var(--bg); border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+  .errors { color: var(--danger); white-space: pre-wrap; }
+  #login { max-width: 28rem; margin: 15vh auto; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <p>Bitte zuerst in BosLook anmelden.</p>
+  <a class="button" href="/">Zur Anmeldung</a>
+</div>
+<div id="app">
+  <header>
+    <h1>Bos<span>Look</span> · Plugins</h1>
+    <button id="reload">Aktualisieren</button>
+  </header>
+  <main>
+    <p class="help">Plugins liegen als Ordner unter <code>plugins/</code> neben der Konfiguration. Eingeschaltet und eingestellt werden sie unter „Einstellungen“ im Abschnitt des Plugins; wirksam nach einem Neustart.</p>
+    <div id="errors" class="errors"></div>
+    <div id="list"></div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const CAPS = { observe: "Mitlesen", process: "Bearbeiten", notify: "Benachrichtigungsart", input: "Eingang" };
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+
+function plugin(p, open) {
+  const box = el("div", "plugin");
+  const h = el("h2", "", p.name);
+  h.append(el("small", "", "Version " + p.version + (p.author ? " · " + p.author : "")));
+  const state = p.state === "läuft" ? "on" : p.state === "aus" ? "off" : "err";
+  h.append(el("span", "state " + state, p.state));
+  box.append(h);
+  if (p.description) box.append(el("p", "", p.description));
+  const caps = el("div", "caps");
+  for (const c of p.capabilities) caps.append(el("span", "", CAPS[c] ?? c));
+  box.append(caps);
+  if (p.log.length) {
+    const log = el("details");
+    log.open = open;
+    log.append(el("summary", "", `Log (${p.log.length} Zeilen)`), el("pre", "", p.log.join("\n")));
+    box.append(log);
+  }
+  return box;
+}
+
+async function load() {
+  const res = await fetch("/api/plugins");
+  if (res.status === 401) { $("app").hidden = true; $("login").hidden = false; return; }
+  if (!res.ok) { $("errors").textContent = await res.text(); return; }
+  const data = await res.json();
+  // Aufgeklappte Logs beim Aktualisieren offen lassen
+  const open = new Set([...document.querySelectorAll(".plugin details[open]")].map((d) => d.closest(".plugin").querySelector("h2").firstChild.textContent));
+  $("errors").textContent = data.errors.length ? "Nicht lesbare Plugins:\n" + data.errors.join("\n") : "";
+  $("list").replaceChildren(...data.plugins.map((p) => plugin(p, open.has(p.name))));
+  if (!data.plugins.length && !data.errors.length) $("list").append(el("p", "help", "Keine Plugins installiert."));
+}
+
+$("reload").onclick = load;
+load();
+</script>
+</body>
+</html>

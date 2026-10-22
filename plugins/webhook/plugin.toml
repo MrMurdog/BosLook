@@ -1,0 +1,28 @@
+name = "webhook"
+version = "1.0.0"
+description = "Alarme per HTTP POST (JSON) an eine beliebige Adresse senden"
+author = "BosLook"
+api = 1
+command = ["python3", "webhook.py"]
+command_windows = ["python", "webhook.py"]
+capabilities = ["notify"]
+
+[[field]]
+key = "timeout"
+label = "Zeitlimit (s)"
+input = "number"
+default = 10
+help = "So lange auf die Antwort des Servers warten"
+
+# Je Benachrichtigungsziel (Dienst „webhook“)
+[[notifier_field]]
+key = "url"
+label = "Adresse"
+required = true
+help = "z. B. https://example.org/alarm"
+
+[[notifier_field]]
+key = "token"
+label = "Token"
+input = "password"
+help = "Optional, wird als „Authorization: Bearer …“ mitgeschickt"

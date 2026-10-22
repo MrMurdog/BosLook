@@ -2,6 +2,7 @@ use crate::config::{ClientConfig, UserConfig};
 use crate::db::Db;
 use crate::descriptions::{self, Description, Search};
 use crate::forward::{Ack, Envelope};
+use crate::plugin::Plugins;
 use crate::telegram::{Decoded, Kind, Telegram};
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -33,6 +34,7 @@ pub struct App {
     /// Weg zur Speicherung für Telegramme von Clients
     ingest: mpsc::Sender<Telegram>,
     config_path: String,
+    plugins: Arc<Plugins>,
 }
 
 pub struct Settings {
@@ -42,6 +44,7 @@ pub struct Settings {
     pub clients: Vec<ClientConfig>,
     pub ingest: mpsc::Sender<Telegram>,
     pub config_path: String,
+    pub plugins: Arc<Plugins>,
 }
 
 impl App {
@@ -57,6 +60,7 @@ impl App {
             clients: s.clients,
             ingest: s.ingest,
             config_path: s.config_path,
+            plugins: s.plugins,
         }
     }
 
@@ -112,6 +116,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
         .route("/api/rewrite/test", post(test_rewrite))
+        .route("/plugins", get(|| async { Html(include_str!("web/plugins.html")) }))
+        .route("/api/plugins", get(plugins))
         .route("/beschreibungen", get(|| async { Html(include_str!("web/descriptions.html")) }))
         .route("/api/descriptions", get(search_descriptions).put(put_description).delete(delete_description))
         // Große Adressbücher (z. B. 86 000 Einträge, etwa 5 MB)
@@ -287,7 +293,7 @@ async fn get_form(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
     let path = app.config_path.clone();
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
-        let schema = crate::form::server_schema();
+        let schema = crate::form::server_schema(&crate::plugin::manifests(&crate::plugin::dir(&path)).0);
         let values = crate::form::to_json(&std::fs::read_to_string(path)?, &schema)?;
         // Ohne Soundkarten (z. B. auf einem vServer) bleibt die Liste leer
         let devices: Vec<_> = crate::input::devices().unwrap_or_default().into_iter().map(|(id, label)| serde_json::json!({"id": id, "label": label})).collect();
@@ -308,7 +314,11 @@ async fn put_form(State(app): State<Arc<App>>, headers: HeaderMap, Json(form): J
     }
     let path = app.config_path.clone();
     // Neue Passwörter werden gehasht, das dauert
-    let text = tokio::task::spawn_blocking(move || crate::form::apply(&std::fs::read_to_string(path)?, &crate::form::server_schema(), &form)).await;
+    let text = tokio::task::spawn_blocking(move || {
+        let schema = crate::form::server_schema(&crate::plugin::manifests(&crate::plugin::dir(&path)).0);
+        crate::form::apply(&std::fs::read_to_string(&path)?, &schema, &form)
+    })
+    .await;
     match text {
         Ok(Ok(text)) => save_config(&app, text),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
@@ -321,7 +331,7 @@ fn save_config(app: &App, text: String) -> Response {
         if c.web.is_none() {
             anyhow::bail!("[web] fehlt, die Weboberfläche wäre danach nicht mehr erreichbar");
         }
-        crate::serve::validate(&c)
+        crate::serve::validate(&c, &crate::plugin::dir(&app.config_path))
     });
     if let Err(e) = checked {
         return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
@@ -383,6 +393,17 @@ async fn test_rewrite(State(app): State<Arc<App>>, headers: HeaderMap, Json(test
     match result {
         Ok(Ok(r)) => Json(r).into_response(),
         Ok(Err(e)) => error(StatusCode::BAD_REQUEST, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// Installierte Plugins mit Zustand und letzten Logzeilen
+async fn plugins(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match tokio::task::spawn_blocking(move || app.plugins.status()).await {
+        Ok(status) => Json(status).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }

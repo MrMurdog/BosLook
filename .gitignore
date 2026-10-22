@@ -6,6 +6,14 @@ boslook-desktop.toml
 *.db
 *.pem
 
+# Plugins: Build-Ergebnisse und eigene Daten
+/plugins/*/target
+/plugins/*/data
+/sdk/rust/target
+/sdk/rust/Cargo.lock
+__pycache__/
+/site
+
 # Arbeitsdateien (Projektbeschreibung, Fragen/Antworten, KI-Anweisungen) bleiben lokal
 /CLAUDE.md
 /.claude/
