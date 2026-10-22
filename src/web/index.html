@@ -19,6 +19,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #plugin-pages { display: contents; }
   header h1 { margin: 0; font-size: 18px; } header h1 span { color: var(--accent); }
   #status { margin-left: auto; color: var(--muted); font-size: 13px; }
   #status.on::before { content: "●"; color: #43a047; margin-right: 4px; }
@@ -98,6 +99,7 @@
     <details id="columns"><summary class="button">Spalten</summary><div></div></details>
     <button id="descriptions-btn">Beschreibungen</button>
     <button id="plugins-btn">Plugins</button>
+    <span id="plugin-pages" hidden></span>
     <button id="settings-btn">Einstellungen</button>
     <button id="logout">Abmelden</button>
   </header>
@@ -217,6 +219,21 @@ for (const c of COLUMNS) {
 document.addEventListener("click", (e) => { if (!$("columns").contains(e.target)) $("columns").open = false; });
 $("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
 $("plugins-btn").onclick = () => window.open("/plugins", "_blank");
+
+// Ein Knopf je Plugin mit eigener Seite
+async function pluginPages() {
+  const res = await fetch("/api/plugins");
+  if (!res.ok) return;
+  const pages = (await res.json()).plugins.filter((p) => p.page);
+  $("plugin-pages").replaceChildren(...pages.map((p) => {
+    const b = document.createElement("button");
+    b.textContent = p.name;
+    b.title = p.description;
+    b.onclick = () => window.open(`/plugins/${p.name}/`, "_blank");
+    return b;
+  }));
+  $("plugin-pages").hidden = !pages.length;
+}
 
 function panel(source) {
   if (panels.has(source)) return panels.get(source);
@@ -356,6 +373,7 @@ async function showApp() {
   const res = await fetch("/api/sources");
   if (res.status === 401) return showLogin();
   const sources = await res.json();
+  pluginPages();
   for (const s of sources) panel(s);
   await Promise.all(sources.map(loadOlder));
   connect();

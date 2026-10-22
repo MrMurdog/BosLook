@@ -18,9 +18,12 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 /// Version der Schnittstelle, die diese Bibliothek spricht
 pub const API: u32 = 1;
@@ -79,6 +82,43 @@ pub struct Notification {
     pub telegram: Option<Telegram>,
 }
 
+/// Anfrage der eigenen Seite an `api/…` (Fähigkeit `web`)
+#[derive(Debug, Clone, Deserialize)]
+pub struct HttpRequest {
+    pub method: String,
+    /// Pfad ohne `/api`, z. B. `/stats`
+    pub path: String,
+    /// Query-String ohne `?`
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub body: String,
+    /// Angemeldeter Benutzer
+    pub user: Option<String>,
+}
+
+/// Antwort an die eigene Seite
+#[derive(Debug, Clone)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub body: String,
+}
+
+impl HttpResponse {
+    pub fn json(value: &Value) -> HttpResponse {
+        HttpResponse { status: 200, content_type: "application/json".into(), body: value.to_string() }
+    }
+
+    pub fn text(body: impl Into<String>) -> HttpResponse {
+        HttpResponse { status: 200, content_type: "text/plain; charset=utf-8".into(), body: body.into() }
+    }
+
+    pub fn not_found() -> HttpResponse {
+        HttpResponse { status: 404, ..HttpResponse::text("nicht gefunden") }
+    }
+}
+
 /// Ergebnis von [`Plugin::process`]
 #[allow(clippy::large_enum_variant)] // selten erzeugt, Box wäre für Plugin-Autoren nur umständlicher
 pub enum Process {
@@ -105,17 +145,49 @@ pub trait Plugin {
     fn notify(&mut self, _n: &Notification) -> Result<(), String> {
         Err("Plugin hat keine Benachrichtigungsart".into())
     }
+
+    /// Fähigkeit `web`: Anfragen der eigenen Seite, Antwort innerhalb von 10 Sekunden
+    fn http(&mut self, _r: &HttpRequest) -> HttpResponse {
+        HttpResponse::not_found()
+    }
 }
 
-/// Schreibt Nachrichten an BosLook; lässt sich klonen und in andere Threads geben.
+/// Schreibt Nachrichten an BosLook und fragt Daten ab; lässt sich klonen und in andere
+/// Threads geben (z. B. in `init` klonen und im Plugin aufheben).
 #[derive(Clone)]
-pub struct Output(Arc<Mutex<std::io::Stdout>>);
+pub struct Output {
+    out: Arc<Mutex<std::io::Stdout>>,
+    /// Offene Abfragen nach ID
+    queries: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>>,
+    next_id: Arc<AtomicU64>,
+}
 
 impl Output {
     fn send(&self, msg: &Value) {
-        let mut out = self.0.lock().unwrap();
+        let mut out = self.out.lock().unwrap();
         let _ = writeln!(out, "{msg}");
         let _ = out.flush();
+    }
+
+    /// Daten von BosLook lesen, z. B. `query("telegrams", json!({"source": "SDR", "limit": 100}))`,
+    /// `query("sources", json!({}))` oder `query("descriptions", json!({"q": "^19388"}))`.
+    /// Funktioniert auch innerhalb der Methoden von [`Plugin`].
+    pub fn query(&self, query: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        self.queries.lock().unwrap().insert(id, tx);
+        let mut msg = json!({ "type": "query", "id": id, "query": query });
+        if let (Some(msg), Value::Object(params)) = (msg.as_object_mut(), params) {
+            msg.extend(params);
+        }
+        self.send(&msg);
+        let reply = rx.recv_timeout(Duration::from_secs(10));
+        self.queries.lock().unwrap().remove(&id);
+        let reply = reply.map_err(|_| format!("keine Antwort auf Abfrage {query}"))?;
+        match reply["error"].as_str() {
+            Some(e) => Err(e.to_string()),
+            None => Ok(reply["result"].clone()),
+        }
     }
 
     /// Fähigkeit `input`: Telegramm an BosLook liefern; `source` = Reiter, Standard = Name des Plugins
@@ -133,11 +205,30 @@ pub fn log(line: impl std::fmt::Display) {
     eprintln!("{line}");
 }
 
-/// Liest Nachrichten von BosLook, bis stdin endet.
+/// Verarbeitet Nachrichten von BosLook, bis stdin endet.
 pub fn run(mut plugin: impl Plugin) {
-    let out = Output(Arc::new(Mutex::new(std::io::stdout())));
-    for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
+    let out = Output { out: Arc::new(Mutex::new(std::io::stdout())), queries: Arc::default(), next_id: Arc::new(AtomicU64::new(1)) };
+    // Eigener Thread zum Lesen, damit Antworten auf query() ankommen, während eine Methode wartet
+    let (tx, rx) = mpsc::channel::<String>();
+    let queries = out.queries.clone();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if let Ok(msg) = serde_json::from_str::<Value>(&line)
+                && msg["type"] == "result"
+            {
+                let waiting = msg["id"].as_u64().and_then(|id| queries.lock().unwrap().remove(&id));
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(msg);
+                }
+                continue;
+            }
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    for line in rx {
         if line.trim().is_empty() {
             continue;
         }
@@ -173,6 +264,10 @@ fn handle(plugin: &mut impl Plugin, out: &Output, line: &str) -> Result<(), serd
                 Err(e) => json!({ "type": "notified", "id": id, "error": e }),
             };
             out.send(&reply);
+        }
+        "http" => {
+            let r = plugin.http(&serde_json::from_value(msg)?);
+            out.send(&json!({ "type": "response", "id": id, "status": r.status, "content_type": r.content_type, "body": r.body }));
         }
         _ => {}
     }

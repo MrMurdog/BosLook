@@ -199,7 +199,8 @@ Servers gelten auch für weitergeleitete Telegramme.
 
 Plugins sind eigenständige Programme in beliebiger Sprache, die den Server erweitern: Telegramme
 mitlesen oder vor der Verarbeitung ändern (z. B. entschlüsseln), neue Benachrichtigungsarten
-bereitstellen oder selbst Telegramme liefern. Ein Plugin ist ein Ordner unter `plugins/` neben
+bereitstellen, selbst Telegramme liefern oder eigene Seiten anzeigen (Knopf mit dem Namen des
+Plugins). Ein Plugin ist ein Ordner unter `plugins/` neben
 der `boslook.toml`; eingeschaltet wird es unter „Einstellungen" im Abschnitt „Plugin: *Name*"
 (in der Datei `[plugin.<name>]`). Die Seite „Plugins" zeigt Zustand und Log aller Plugins.
 
@@ -212,8 +213,9 @@ type = "webhook"
 url = "https://example.org/alarm"
 ```
 
-Mitgeliefert sind die Beispiele `plugins/webhook` (Python, Benachrichtigung per HTTP POST) und
-`plugins/beispiel-bearbeitung` (Rust, ersetzt Abkürzungen; vorher dort `cargo build --release`).
+Mitgeliefert sind die Beispiele `plugins/webhook` (Python, Benachrichtigung per HTTP POST),
+`plugins/statistik` (Python, eigene Seite mit Statistiken) und `plugins/beispiel-bearbeitung`
+(Rust, ersetzt Abkürzungen; vorher dort `cargo build --release`).
 Bibliotheken für eigene Plugins liegen unter `sdk/python` und `sdk/rust`.
 
 Dokumentation in `docs/`: [Plugins benutzen](docs/index.md),
@@ -242,7 +244,8 @@ Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). B
 Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
 „Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten, beides als Formular
 wie in der Weboberfläche oder als Text. „Beschreibungen" öffnet den Editor für das
-Adressbuch in einem eigenen Fenster, „Plugins" die Seite der Plugins im Browser. Spalten lassen sich unter „Spalten" ein- und ausblenden
+Adressbuch in einem eigenen Fenster, „Plugins" und die Knöpfe von Plugins mit eigener Seite
+öffnen den Browser. Spalten lassen sich unter „Spalten" ein- und ausblenden
 und (wie in der Weboberfläche) mit der Maus breiter ziehen; beides bleibt gespeichert.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter

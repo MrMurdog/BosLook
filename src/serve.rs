@@ -68,7 +68,7 @@ pub async fn run(config_path: &str) -> Result<()> {
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);
-    let plugins = Arc::new(Plugins::start(&config, &plugin_dir, tx.clone())?);
+    let plugins = Arc::new(Plugins::new(&config, &plugin_dir)?);
     let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat), &plugins)?;
     let app = Arc::new(App::new(
         db,
@@ -88,6 +88,9 @@ pub async fn run(config_path: &str) -> Result<()> {
             plugins: plugins.clone(),
         },
     ));
+    // Erst jetzt starten: Plugins können ab dem ersten Moment Daten abfragen
+    let weak = Arc::downgrade(&app);
+    plugins.start(tx.clone(), Arc::new(move |q| weak.upgrade().context("BosLook wird beendet")?.plugin_query(q)));
     for i in config.inputs {
         let tx = tx.clone();
         std::thread::spawn(move || {

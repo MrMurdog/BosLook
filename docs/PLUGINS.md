@@ -25,6 +25,8 @@ plugins/
     webhook.py         das Programm
     boslook_plugin.py  Python-Bibliothek, mitkopiert
     data/              legt BosLook an: Ordner für eigene Daten
+    web/               nur mit Fähigkeit "web": die eigene Seite
+      index.html
 ```
 
 Eingeschaltet wird ein Plugin in der Konfiguration mit einem Abschnitt `[plugin.<name>]`, im
@@ -103,6 +105,9 @@ Felder, die nicht ausgefüllt sind und keinen `default` haben, fehlen im JSON.
 | `process` | `process`                | `processed` (innerhalb von 2 s)  |
 | `notify`  | `notify`                 | `notified` (innerhalb von 30 s)  |
 | `input`   | –                        | `telegram` (jederzeit)           |
+| `web`     | `http`                   | `response` (innerhalb von 10 s)  |
+
+Unabhängig von den Fähigkeiten darf jedes Plugin jederzeit Daten [abfragen](#query-result-plugin-boslook).
 
 Ablauf eines Telegramms im Server:
 
@@ -208,6 +213,65 @@ Reihenfolge kommen.
 der Name des Plugins. Zeit setzt BosLook. Das Telegramm durchläuft danach den ganzen Ablauf,
 auch die `process`-Plugins.
 
+### http / response (Fähigkeit `web`)
+
+Ein Plugin mit `web` und einem Ordner `web/` hat eine eigene Seite unter `/plugins/<name>/`.
+BosLook liefert die Dateien aus `web/` selbst aus (`index.html` als Startseite), nur an
+angemeldete Benutzer. In der Weboberfläche erscheint ein Knopf mit dem Namen des Plugins; die
+Desktop-App öffnet die Seite im Browser.
+
+Anfragen der Seite an `/plugins/<name>/api/…` (jede Methode) schickt BosLook an das Plugin:
+
+```json
+{"type": "http", "id": 9, "method": "GET", "path": "/stats", "query": "tag=heute",
+ "body": "", "user": "admin"}
+```
+
+- `path`: Pfad ohne `/plugins/<name>/api`
+- `query`: Query-String ohne `?`, `body`: Inhalt als Text
+- `user`: angemeldeter Benutzer
+
+Antwort mit derselben `id`, entweder als JSON oder als Text:
+
+```json
+{"type": "response", "id": 9, "json": {"total": 42}}
+{"type": "response", "id": 9, "status": 404, "content_type": "text/plain", "body": "unbekannt"}
+```
+
+`status` ist ohne Angabe 200, `content_type` ohne Angabe `text/plain; charset=utf-8`. Ohne
+Antwort nach **10 Sekunden** bekommt die Seite den Fehler 502.
+
+In der Seite gelten Adressen relativ zu `/plugins/<name>/`, also z. B. `fetch("api/stats")`.
+Mit `<link rel="stylesheet" href="/plugin.css">` sieht die Seite aus wie BosLook, hell und
+dunkel nach Systemeinstellung. Die Seite läuft unter derselben Adresse wie BosLook und darf
+dessen Schnittstellen nutzen.
+
+### query / result (Plugin → BosLook)
+
+Jedes Plugin kann Daten lesen. Die `id` vergibt das Plugin selbst; BosLook antwortet mit
+`result` und derselben `id`. Schreiben ist nicht möglich.
+
+```json
+{"type": "query", "id": 1, "query": "sources"}
+{"type": "query", "id": 2, "query": "telegrams", "source": "SDR", "limit": 100, "before": 5120}
+{"type": "query", "id": 3, "query": "descriptions", "q": "^19388", "sort": "ort", "desc": false, "offset": 0, "limit": 100}
+```
+
+| Abfrage        | Parameter                                              | Ergebnis |
+|----------------|--------------------------------------------------------|----------|
+| `sources`      | –                                                      | Liste der Quellen (Reiter) |
+| `telegrams`    | `source` (Pflicht), `limit` (100, höchstens 1000), `before` (nur Telegramme mit kleinerer `id`) | Telegramme, neueste zuerst |
+| `descriptions` | `q` (regulärer Ausdruck über alle Spalten), `sort` (`address`, `ort`, `kurz`, `lang`), `desc`, `offset`, `limit` (100, höchstens 1000) | `{"total": …, "rows": [{"address", "ort", "kurz", "lang"}], "notice": …}` |
+
+```json
+{"type": "result", "id": 2, "result": [TELEGRAMM, …]}
+{"type": "result", "id": 9, "error": "unbekannte Abfrage 'x'"}
+```
+
+Antworten kommen in beliebiger Reihenfolge, auch zwischen anderen Nachrichten. Ein Plugin,
+das in einem Handler auf ein Ergebnis wartet, muss stdin darum in einem eigenen Thread lesen –
+die Bibliotheken tun das.
+
 ## Betrieb
 
 - **Start:** beim Start von BosLook, in der Reihenfolge der Abschnitte. Nachrichten, die vor
@@ -252,8 +316,17 @@ def notify(target, title, body, priority, telegram):
     if not target.get("url"):
         raise ValueError("keine Adresse")  # Ausnahme = Fehler an BosLook
 
+@plugin.on_http                         # Fähigkeit web
+def http(method, path, query, body, user):
+    if path == "/zahl":
+        return {"telegramme": 42}         # dict/list = JSON, str = Text
+    return (404, "text/plain", "unbekannt")  # oder (Status, Typ, Inhalt)
+
 # Fähigkeit input, aus jedem Thread:
 # plugin.send_telegram("fms", "12345678", "Status 3", source="Leitstelle")
+
+# Daten lesen, auch innerhalb der Handler:
+# plugin.query("telegrams", source="SDR", limit=10)
 
 plugin.run()
 ```
@@ -268,15 +341,29 @@ boslook-plugin = { path = "../../sdk/rust" }
 ```
 
 ```rust
-use boslook_plugin::{Init, Notification, Output, Plugin, Process, Telegram};
+use boslook_plugin::{HttpRequest, HttpResponse, Init, Notification, Output, Plugin, Process, Telegram};
+use serde_json::json;
 
-struct Mein;
+struct Mein {
+    out: Option<Output>,
+}
 
 impl Plugin for Mein {
     fn init(&mut self, init: &Init, out: &Output) {
         boslook_plugin::log(format!("Einstellungen: {:?}", init.config));
-        // Fähigkeit input: out.clone() in einen Thread geben und dort
+        // Für Abfragen und Telegramme aufheben; lässt sich auch in Threads geben:
         // out.send_telegram("fms", "12345678", "", "Status 3", Some("Leitstelle"));
+        self.out = Some(out.clone());
+    }
+
+    fn http(&mut self, r: &HttpRequest) -> HttpResponse {
+        match r.path.as_str() {
+            "/quellen" => match self.out.as_ref().map(|o| o.query("sources", json!({}))) {
+                Some(Ok(list)) => HttpResponse::json(&list),
+                _ => HttpResponse::text("Fehler"),
+            },
+            _ => HttpResponse::not_found(),
+        }
     }
 
     fn process(&mut self, t: &Telegram) -> Process {
@@ -293,11 +380,13 @@ impl Plugin for Mein {
 }
 
 fn main() {
-    boslook_plugin::run(Mein);
+    boslook_plugin::run(Mein { out: None });
 }
 ```
 
-Alle Methoden laufen nacheinander im Haupt-Thread. Methoden, die du nicht brauchst, lässt du weg.
+Alle Methoden laufen nacheinander im Haupt-Thread; `Output::query` funktioniert trotzdem auch
+darin. Methoden, die du nicht brauchst, lässt du weg. Für `json!` braucht das Plugin
+`serde_json` als Abhängigkeit.
 
 ## Schritt für Schritt
 
@@ -324,6 +413,7 @@ Alle Methoden laufen nacheinander im Haupt-Thread. Methoden, die du nicht brauch
 |--------------------------------|---------|-----------|-----------------------------------------|
 | `plugins/webhook`              | Python  | notify    | Benachrichtigungsart mit eigenen Feldern |
 | `plugins/beispiel-bearbeitung` | Rust    | process   | Meldungen ändern, Einstellungen lesen    |
+| `plugins/statistik`            | Python  | observe, web | eigene Seite, Datenabfragen (Verlauf beim Start, Suche in den Beschreibungen) |
 
 Das Rust-Beispiel muss vor dem Einschalten gebaut werden:
 
@@ -331,9 +421,3 @@ Das Rust-Beispiel muss vor dem Einschalten gebaut werden:
 cd plugins/beispiel-bearbeitung
 cargo build --release
 ```
-
-## Geplant
-
-Eigene Seiten von Plugins in der Weboberfläche und lesende Abfragen von Telegrammen und
-Beschreibungen kommen in einer der nächsten Versionen. Die Schnittstelle bleibt dabei `api = 1`;
-neue Nachrichten kommen nur dazu.

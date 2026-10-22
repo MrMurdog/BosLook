@@ -1,0 +1,27 @@
+/* Aussehen von BosLook für Seiten von Plugins: <link rel="stylesheet" href="/plugin.css">
+   Hell und dunkel nach Systemeinstellung. Klassen: .muted, .error, .box, .row; sonst
+   werden header, h1, button, input, select, textarea und table direkt gestaltet. */
+:root { --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea; --accent: #005795; --danger: #dd3127; --ok: #2e7d32; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c; --accent: #4a9be0; --danger: #ef5350; --ok: #66bb6a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0 8px 0 0; font-size: 18px; }
+main { padding: 16px; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+a { color: var(--accent); }
+button, .button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+input, select, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); max-width: 100%; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+code, pre { font-family: ui-monospace, monospace; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; overflow-x: auto; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); }
+[hidden] { display: none !important; }

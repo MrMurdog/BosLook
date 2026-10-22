@@ -99,6 +99,8 @@ struct App {
     descriptions: descriptions::Window,
     /// Adresse der Weboberfläche des Servers, für Seiten, die im Browser aufgehen
     server_url: Option<String>,
+    /// Plugins mit eigener Seite
+    plugin_pages: Vec<String>,
     /// Ausgeblendete Spalten (Schlüssel aus `COLUMNS`)
     hidden: Vec<String>,
     tray: Option<tray_icon::TrayIcon>,
@@ -134,6 +136,7 @@ impl App {
             server_loading: false,
             descriptions: descriptions::Window::default(),
             server_url: None,
+            plugin_pages: Vec::new(),
             hidden,
             tray,
             tray_rx,
@@ -195,7 +198,8 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 FromClient::Status { text, connected } => (self.status, self.connected) = (text, connected),
-                FromClient::Reset { sources, history } => {
+                FromClient::Reset { sources, history, pages } => {
+                    self.plugin_pages = pages;
                     self.rows.clear();
                     for t in history {
                         self.rows.entry(t.source.clone()).or_default().push_back(t);
@@ -437,6 +441,13 @@ impl eframe::App for App {
                     && ui.button("Plugins").on_hover_text("Öffnet die Seite im Browser").clicked()
                 {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins")));
+                }
+                if let Some(url) = &self.server_url {
+                    for name in &self.plugin_pages {
+                        if ui.button(name).on_hover_text("Seite des Plugins im Browser").clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins/{name}/")));
+                        }
+                    }
                 }
                 if self.view == View::Telegrams {
                     // Offen lassen, damit mehrere Spalten auf einmal umgeschaltet werden können

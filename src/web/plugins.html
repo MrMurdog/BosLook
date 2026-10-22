@@ -51,7 +51,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const CAPS = { observe: "Mitlesen", process: "Bearbeiten", notify: "Benachrichtigungsart", input: "Eingang" };
+const CAPS = { observe: "Mitlesen", process: "Bearbeiten", notify: "Benachrichtigungsart", input: "Eingang", web: "Eigene Seite" };
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -68,6 +68,12 @@ function plugin(p, open) {
   h.append(el("span", "state " + state, p.state));
   box.append(h);
   if (p.description) box.append(el("p", "", p.description));
+  if (p.page) {
+    const link = el("a", "button", "Seite öffnen");
+    link.href = `/plugins/${p.name}/`; link.target = "_blank";
+    const row = el("p"); row.append(link);
+    box.append(row);
+  }
   const caps = el("div", "caps");
   for (const c of p.capabilities) caps.append(el("span", "", CAPS[c] ?? c));
   box.append(caps);

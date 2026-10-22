@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statistik – BosLook</title>
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/plugin.css">
+<style>
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 160px; }
+  .bars div { flex: 1; min-width: 3px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .labels { display: flex; justify-content: space-between; font-size: 12px; }
+  td.n { text-align: right; width: 4rem; }
+  #q { flex: 1 1 14rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Statistik</h1>
+  <span id="total" class="muted"></span>
+</header>
+<main>
+  <div class="box">
+    <h2>Telegramme pro Stunde</h2>
+    <div id="bars" class="bars"></div>
+    <div class="labels muted"><span id="from"></span><span id="to"></span></div>
+  </div>
+  <div class="box">
+    <h2>Häufigste Adressen</h2>
+    <table>
+      <thead><tr><th>Art</th><th>Adresse</th><th>Ort</th><th>Kurzbeschreibung</th><th class="n">Anzahl</th></tr></thead>
+      <tbody id="top"></tbody>
+    </table>
+  </div>
+  <div class="box">
+    <h2>In den Beschreibungen suchen</h2>
+    <div class="row"><input id="q" placeholder="z. B. ^19388 oder Leipzig"></div>
+    <table><tbody id="found"></tbody></table>
+  </div>
+  <p id="error" class="error"></p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function rows(tbody, list, cells) {
+  tbody.replaceChildren(...list.map((x) => {
+    const tr = document.createElement("tr");
+    for (const [text, cls] of cells(x)) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    return tr;
+  }));
+}
+
+async function api(path) {
+  // Relativ: /plugins/statistik/api/…
+  const res = await fetch("api/" + path);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function load() {
+  try {
+    const s = await api("stats");
+    $("error").textContent = "";
+    $("total").textContent = `${s.total} Telegramme in ${s.hours.length} Stunden`;
+    const max = Math.max(1, ...s.hours.map((h) => h.count));
+    $("bars").replaceChildren(...s.hours.map((h) => {
+      const bar = document.createElement("div");
+      bar.style.height = (100 * h.count / max) + "%";
+      bar.title = `${h.hour} Uhr: ${h.count}`;
+      return bar;
+    }));
+    $("from").textContent = s.hours[0]?.hour ?? "";
+    $("to").textContent = s.hours.at(-1)?.hour ?? "";
+    rows($("top"), s.top, (t) => [[t.kind.toUpperCase()], [t.address + t.sub], [t.ort], [t.kurz], [t.count, "n"]]);
+  } catch (e) {
+    $("error").textContent = e.message;
+  }
+}
+
+let timer = null;
+$("q").oninput = () => {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    if (!$("q").value) return $("found").replaceChildren();
+    try {
+      const page = await api("suche?q=" + encodeURIComponent($("q").value));
+      rows($("found"), page.rows, (d) => [[d.address], [d.ort], [d.kurz]]);
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  }, 300);
+};
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

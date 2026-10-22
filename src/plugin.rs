@@ -28,6 +28,8 @@ const RESTART: Duration = Duration::from_secs(5);
 /// So lange darf ein Plugin ein Telegramm bearbeiten, danach läuft es unverändert weiter
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(2);
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(30);
+/// So lange darf ein Plugin für eine Anfrage seiner Seite brauchen
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Letzte Logzeilen je Plugin für die Seite „Plugins"
 const LOG_LINES: usize = 100;
 /// Diese Namen sind schon eingebaute Benachrichtigungsdienste
@@ -72,6 +74,8 @@ pub enum Capability {
     Notify,
     /// Liefert selbst Telegramme
     Input,
+    /// Eigene Seite aus `web/`, Anfragen an `/plugins/<name>/api/…` gehen an das Plugin
+    Web,
 }
 
 /// Ein Eingabefeld für das Konfigurationsformular
@@ -228,7 +232,10 @@ fn required(fields: &[FieldDef], settings: &toml::Table) -> Result<()> {
     }
 }
 
-/// Die laufenden Plugins
+/// Beantwortet Datenabfragen von Plugins (`query`), siehe [`crate::web::App::plugin_query`]
+pub type QueryFn = Arc<dyn Fn(&Value) -> Result<Value> + Send + Sync>;
+
+/// Die eingeschalteten Plugins
 pub struct Plugins {
     running: Vec<Arc<Plugin>>,
     dir: PathBuf,
@@ -238,6 +245,8 @@ pub struct Plugin {
     pub manifest: Manifest,
     /// Zeilen an stdin des Plugins; während eines Neustarts warten sie hier
     tx: mpsc::UnboundedSender<String>,
+    /// Gegenstück zu `tx` und Einstellungen, bis [`Plugins::start`] das Plugin startet
+    start: Mutex<Option<(mpsc::UnboundedReceiver<String>, toml::Table)>>,
     /// Offene Anfragen (process, notify) nach ID
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
@@ -246,13 +255,8 @@ pub struct Plugin {
 }
 
 impl Plugins {
-    /// Ohne Plugins (z. B. für Tests)
-    pub fn none() -> Plugins {
-        Plugins { running: Vec::new(), dir: PathBuf::new() }
-    }
-
-    /// Startet alle eingeschalteten Plugins. Muss innerhalb einer Tokio-Laufzeit aufgerufen werden.
-    pub fn start(config: &Config, dir: &Path, ingest: mpsc::Sender<Telegram>) -> Result<Plugins> {
+    /// Legt die eingeschalteten Plugins an; laufen tun sie erst nach [`Plugins::start`].
+    pub fn new(config: &Config, dir: &Path) -> Result<Plugins> {
         let (manifests, _) = manifests(dir);
         check(config, &manifests)?;
         let mut running = Vec::new();
@@ -261,18 +265,26 @@ impl Plugins {
             let mut settings = settings.clone();
             settings.remove("enabled");
             let (tx, rx) = mpsc::unbounded_channel();
-            let plugin = Arc::new(Plugin {
+            running.push(Arc::new(Plugin {
                 manifest,
                 tx,
+                start: Mutex::new(Some((rx, settings))),
                 pending: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 state: Mutex::new("startet".into()),
                 log: Mutex::new(VecDeque::new()),
-            });
-            tokio::spawn(supervise(plugin.clone(), settings, rx, ingest.clone()));
-            running.push(plugin);
+            }));
         }
         Ok(Plugins { running, dir: dir.to_path_buf() })
+    }
+
+    /// Startet die Plugins. Muss innerhalb einer Tokio-Laufzeit aufgerufen werden.
+    pub fn start(&self, ingest: mpsc::Sender<Telegram>, query: QueryFn) {
+        for plugin in &self.running {
+            if let Some((rx, settings)) = plugin.start.lock().unwrap().take() {
+                tokio::spawn(supervise(plugin.clone(), settings, rx, ingest.clone(), query.clone()));
+            }
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Plugin>> {
@@ -316,6 +328,7 @@ impl Plugins {
             .map(|m| {
                 let running = self.get(&m.name);
                 json!({
+                    "page": running.as_ref().is_some_and(|p| p.web_dir().is_some()),
                     "name": m.name,
                     "version": m.version,
                     "description": m.description,
@@ -344,6 +357,19 @@ fn apply_reply(t: &Telegram, reply: &Value) -> Result<Option<Telegram>> {
 }
 
 impl Plugin {
+    /// Ordner der eigenen Seite, wenn das Plugin die Fähigkeit `web` und einen Ordner `web/` hat
+    pub fn web_dir(&self) -> Option<PathBuf> {
+        let dir = self.manifest.dir.join("web");
+        (self.manifest.has(Capability::Web) && dir.is_dir()).then_some(dir)
+    }
+
+    /// Anfrage der eigenen Seite an `/plugins/<name>/api/…` an das Plugin weitergeben
+    pub async fn http(&self, request: Value) -> Result<Value> {
+        let mut msg = request;
+        msg["type"] = "http".into();
+        self.request(msg, HTTP_TIMEOUT).await
+    }
+
     fn send(&self, msg: &Value) {
         let _ = self.tx.send(msg.to_string());
     }
@@ -398,12 +424,12 @@ impl Plugin {
     }
 
     /// Eine Zeile von stdout des Plugins
-    async fn handle(&self, line: &str, ingest: &mpsc::Sender<Telegram>) {
+    async fn handle(self: &Arc<Self>, line: &str, ingest: &mpsc::Sender<Telegram>, query: &QueryFn) {
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.log(format!("keine JSON-Nachricht auf stdout (Ausgaben für das Log gehören nach stderr): {line}"));
         };
         match msg["type"].as_str().unwrap_or_default() {
-            "processed" | "notified" => {
+            "processed" | "notified" | "response" => {
                 let waiting = msg["id"].as_u64().and_then(|id| self.pending.lock().unwrap().remove(&id));
                 if let Some(tx) = waiting {
                     let _ = tx.send(msg);
@@ -416,6 +442,17 @@ impl Plugin {
                 Err(e) => self.log(format!("ungültiges Telegramm: {e:#}")),
             },
             "telegram" => self.log("liefert Telegramme, hat aber nicht die Fähigkeit 'input'".into()),
+            "query" => {
+                // Datenbank ist blockierend; die Antwort trägt die ID des Plugins
+                let (plugin, query) = (self.clone(), query.clone());
+                tokio::task::spawn_blocking(move || {
+                    let reply = match query(&msg) {
+                        Ok(result) => json!({ "type": "result", "id": msg["id"], "result": result }),
+                        Err(e) => json!({ "type": "result", "id": msg["id"], "error": format!("{e:#}") }),
+                    };
+                    plugin.send(&reply);
+                });
+            }
             other => self.log(format!("unbekannte Nachricht '{other}'")),
         }
     }
@@ -439,7 +476,7 @@ fn input(value: &Value, plugin: &str) -> Result<Telegram> {
 }
 
 /// Startet das Plugin und nach einem Ende nach kurzer Pause neu.
-async fn supervise(plugin: Arc<Plugin>, settings: toml::Table, mut rx: mpsc::UnboundedReceiver<String>, ingest: mpsc::Sender<Telegram>) {
+async fn supervise(plugin: Arc<Plugin>, settings: toml::Table, mut rx: mpsc::UnboundedReceiver<String>, ingest: mpsc::Sender<Telegram>, query: QueryFn) {
     let m = &plugin.manifest;
     let data_dir = m.dir.join("data");
     let init = json!({ "type": "init", "api": API, "boslook": env!("CARGO_PKG_VERSION"), "name": m.name, "config": settings, "data_dir": data_dir });
@@ -457,7 +494,7 @@ async fn supervise(plugin: Arc<Plugin>, settings: toml::Table, mut rx: mpsc::Unb
             loop {
                 tokio::select! {
                     line = stdout.next_line() => match line? {
-                        Some(line) => plugin.handle(&line, &ingest).await,
+                        Some(line) => plugin.handle(&line, &ingest, &query).await,
                         None => break,
                     },
                     line = stderr.next_line(), if stderr_open => match line {
@@ -604,6 +641,7 @@ mod tests {
     #[test]
     fn python_library_copy_is_current() {
         assert_eq!(include_str!("../plugins/webhook/boslook_plugin.py"), include_str!("../sdk/python/boslook_plugin.py"));
+        assert_eq!(include_str!("../plugins/statistik/boslook_plugin.py"), include_str!("../sdk/python/boslook_plugin.py"));
     }
 
     #[test]

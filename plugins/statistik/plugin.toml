@@ -1,0 +1,15 @@
+name = "statistik"
+version = "1.0.0"
+description = "Telegramme pro Stunde und die häufigsten Adressen, als eigene Seite"
+author = "BosLook"
+api = 1
+command = ["python3", "statistik.py"]
+command_windows = ["python", "statistik.py"]
+capabilities = ["observe", "web"]
+
+[[field]]
+key = "stunden"
+label = "Zeitraum (Stunden)"
+input = "number"
+default = 24
+help = "So weit zurück wird gezählt"

@@ -21,8 +21,9 @@ const HISTORY: &str = "200";
 
 pub enum FromClient {
     Status { text: String, connected: bool },
-    /// Neu verbunden: Quellen und Verlauf ersetzen die bisherige Anzeige
-    Reset { sources: Vec<String>, history: Vec<Telegram> },
+    /// Neu verbunden: Quellen und Verlauf ersetzen die bisherige Anzeige; `pages` sind die
+    /// Plugins mit eigener Seite
+    Reset { sources: Vec<String>, history: Vec<Telegram>, pages: Vec<String> },
     Telegram(Telegram),
     ServerConfig(Result<String, String>),
     /// Schema, Werte und Soundkarten für das Formular
@@ -138,13 +139,19 @@ async fn session(
             get("/api/telegrams").query(&[("source", source.as_str()), ("limit", HISTORY)]).send().await?.error_for_status()?.json().await?;
         history.extend(page);
     }
+    // Ältere Server ohne Plugins liefern hier einen Fehler, dann eben keine Seiten
+    let plugins: serde_json::Value = match get("/api/plugins").send().await.and_then(|r| r.error_for_status()) {
+        Ok(res) => res.json().await.unwrap_or_default(),
+        Err(_) => serde_json::Value::Null,
+    };
+    let pages = plugins["plugins"].as_array().into_iter().flatten().filter(|p| p["page"] == true).filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
 
     let ws_url = format!("{base}/api/live").replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
     let mut request = ws_url.as_str().into_client_request()?;
     request.headers_mut().insert("cookie", cookie.parse()?);
     let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls));
     let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await?;
-    send(FromClient::Reset { sources, history });
+    send(FromClient::Reset { sources, history, pages });
     send(FromClient::Status { text: format!("verbunden mit {base}"), connected: true });
 
     let mut ping = tokio::time::interval(PING);

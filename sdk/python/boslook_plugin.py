@@ -16,7 +16,9 @@ Doku: docs/PLUGINS.md
     plugin.run()
 """
 
+import itertools
 import json
+import queue
 import sys
 import threading
 import traceback
@@ -41,7 +43,11 @@ class Plugin:
         self._telegram = None
         self._process = None
         self._notify = None
+        self._http = None
         self._out = threading.Lock()
+        self._ids = itertools.count(1)
+        #: offene Abfragen: id -> [threading.Event, Antwort]
+        self._queries = {}
 
     def on_init(self, handler):
         """``handler()`` läuft einmal nach dem Start; ``config`` usw. sind dann gesetzt."""
@@ -67,6 +73,30 @@ class Plugin:
         self._notify = handler
         return handler
 
+    def on_http(self, handler):
+        """Fähigkeit ``web``: ``handler(method, path, query, body, user)`` beantwortet Anfragen
+        der eigenen Seite an ``api/…`` (``path`` ohne ``/api``, z. B. ``/stats``). Rückgabe:
+        dict oder list (wird JSON), str (Text) oder ``(status, content_type, body)``."""
+        self._http = handler
+        return handler
+
+    def query(self, query, timeout=10, **params):
+        """Daten von BosLook lesen (aus jedem Handler und Thread erlaubt):
+        ``query("sources")``, ``query("telegrams", source="SDR", limit=100, before=None)``,
+        ``query("descriptions", q="^19388", sort="ort", desc=False, offset=0, limit=100)``.
+        Wirft ``RuntimeError`` bei einem Fehler oder ohne Antwort."""
+        qid = next(self._ids)
+        waiting = [threading.Event(), None]
+        self._queries[qid] = waiting
+        self._send({"type": "query", "id": qid, "query": query, **params})
+        if not waiting[0].wait(timeout):
+            self._queries.pop(qid, None)
+            raise RuntimeError(f"keine Antwort auf Abfrage {query}")
+        reply = waiting[1]
+        if "error" in reply:
+            raise RuntimeError(reply["error"])
+        return reply["result"]
+
     def send_telegram(self, kind, address, message="", sub="", source=None):
         """Fähigkeit ``input``: liefert ein Telegramm an BosLook (aus jedem Thread erlaubt).
         ``kind``: pocsag, fms, zvei oder wetter; ``source``: Reiter, Standard = Name des Plugins."""
@@ -91,6 +121,21 @@ class Plugin:
             self._notify(msg["target"], msg["title"], msg["body"], msg["priority"], msg.get("telegram"))
         except Exception as e:
             reply["error"] = str(e) or type(e).__name__
+        self._send(reply)
+
+    def _http_reply(self, msg):
+        reply = {"type": "response", "id": msg["id"]}
+        try:
+            result = self._http(msg["method"], msg["path"], msg.get("query", ""), msg.get("body", ""), msg.get("user"))
+        except Exception:
+            self.log(traceback.format_exc())
+            result = (500, "text/plain; charset=utf-8", "Fehler im Plugin, siehe Log")
+        if isinstance(result, tuple):
+            reply["status"], reply["content_type"], reply["body"] = result
+        elif isinstance(result, str):
+            reply["body"] = result
+        else:
+            reply["json"] = result
         self._send(reply)
 
     def _handle(self, msg):
@@ -124,13 +169,36 @@ class Plugin:
                 threading.Thread(target=self._notify_thread, args=(msg,)).start()
             else:
                 self._send({"type": "notified", "id": msg["id"], "error": "Plugin hat kein on_notify"})
+        elif kind == "http":
+            if self._http:
+                self._http_reply(msg)
+            else:
+                self._send({"type": "response", "id": msg["id"], "status": 404, "body": "Plugin hat kein on_http"})
 
-    def run(self):
-        """Liest Nachrichten, bis BosLook stdin schließt (dann endet das Plugin)."""
+    def _read(self, messages):
+        # Eigener Thread, damit Antworten auf query() ankommen, während ein Handler wartet
         for line in sys.stdin:
             if not line.strip():
                 continue
             try:
-                self._handle(json.loads(line))
+                msg = json.loads(line)
+            except ValueError:
+                self.log("keine JSON-Nachricht:", line.strip())
+                continue
+            waiting = self._queries.pop(msg.get("id"), None) if msg.get("type") == "result" else None
+            if waiting:
+                waiting[1] = msg
+                waiting[0].set()
+            else:
+                messages.put(msg)
+        messages.put(None)
+
+    def run(self):
+        """Verarbeitet Nachrichten, bis BosLook stdin schließt (dann endet das Plugin)."""
+        messages = queue.Queue()
+        threading.Thread(target=self._read, args=(messages,), daemon=True).start()
+        while (msg := messages.get()) is not None:
+            try:
+                self._handle(msg)
             except Exception:
                 self.log(traceback.format_exc())

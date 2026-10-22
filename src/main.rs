@@ -58,7 +58,8 @@ fn test_notify(path: &str) -> Result<()> {
     // Dienste von Plugins brauchen die laufenden Plugins
     let runtime = tokio::runtime::Runtime::new()?;
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
-    let plugins = runtime.block_on(async { plugin::Plugins::start(&config, &plugin::dir(path), tx) })?;
+    let plugins = plugin::Plugins::new(&config, &plugin::dir(path))?;
+    runtime.block_on(async { plugins.start(tx, std::sync::Arc::new(|_| anyhow::bail!("bei test-notify gibt es keine Daten"))) });
     for n in &config.notifiers {
         let sender = {
             let _runtime = runtime.enter();

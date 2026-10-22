@@ -20,6 +20,8 @@ Plugins erweitern den Server um
 - **Bearbeiten**: Telegramme vor der Verarbeitung ändern oder verwerfen
 - **Benachrichtigungsarten**: neue Dienste neben Telegram, Pushover und E-Mail
 - **Eingänge**: Telegramme aus anderen Quellen liefern
+- **Eigene Seiten**: z. B. Statistiken oder Einstellungen, erreichbar über einen Knopf mit dem
+  Namen des Plugins in der Weboberfläche und der Desktop-App (öffnet den Browser)
 
 ### Installieren
 
@@ -80,3 +82,4 @@ auch Fehler in einer `plugin.toml`. Das Log erscheint außerdem in der Ausgabe v
 |------------------------|----------------------------------------------------------------|
 | `webhook`              | Benachrichtigungsart: Alarme per HTTP POST (JSON) senden; braucht Python 3 |
 | `beispiel-bearbeitung` | Ersetzt Abkürzungen in Meldungen (z. B. `FF=Freiwillige Feuerwehr`); vorher `cargo build --release` im Ordner |
+| `statistik`            | Eigene Seite mit Telegrammen pro Stunde, den häufigsten Adressen und einer Suche in den Beschreibungen; braucht Python 3 |

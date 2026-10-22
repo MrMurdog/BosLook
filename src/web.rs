@@ -7,10 +7,10 @@ use crate::telegram::{Decoded, Kind, Telegram};
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, RawQuery, State};
+use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -74,6 +74,33 @@ impl App {
         self.sessions.lock().unwrap().get(token).cloned()
     }
 
+    /// Konfigurierte Eingänge, dann weitere Quellen aus der Datenbank
+    fn sources(&self) -> anyhow::Result<Vec<String>> {
+        let stored = self.db.lock().unwrap().sources()?;
+        let mut list = self.inputs.clone();
+        list.extend(stored.into_iter().filter(|s| !self.inputs.contains(s)));
+        Ok(list)
+    }
+
+    /// Datenabfrage eines Plugins (`query`): `sources`, `telegrams` (wie `/api/telegrams`) oder
+    /// `descriptions` (wie die Suche im Editor). Nur lesend.
+    pub fn plugin_query(&self, q: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        use anyhow::Context;
+        Ok(match q["query"].as_str().unwrap_or_default() {
+            "sources" => serde_json::to_value(self.sources()?)?,
+            "telegrams" => {
+                let source = q["source"].as_str().context("source fehlt")?;
+                let limit = q["limit"].as_u64().unwrap_or(100).min(1000) as u32;
+                serde_json::to_value(self.db.lock().unwrap().latest(source, limit, q["before"].as_i64())?)?
+            }
+            "descriptions" => {
+                let search: Search = serde_json::from_value(q.clone())?;
+                serde_json::to_value(descriptions::search(&self.descriptions()?, &search))?
+            }
+            other => anyhow::bail!("unbekannte Abfrage '{other}'"),
+        })
+    }
+
     fn descriptions(&self) -> anyhow::Result<Arc<Vec<Description>>> {
         let mut cache = self.descriptions.lock().unwrap();
         if cache.is_none() {
@@ -118,6 +145,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/rewrite/test", post(test_rewrite))
         .route("/plugins", get(|| async { Html(include_str!("web/plugins.html")) }))
         .route("/api/plugins", get(plugins))
+        .route("/plugin.css", get(|| async { ([(header::CONTENT_TYPE, "text/css")], include_str!("web/plugin.css")) }))
+        .route("/plugins/{name}", get(|AxumPath(name): AxumPath<String>| async move { Redirect::permanent(&format!("/plugins/{name}/")) }))
+        .route("/plugins/{name}/", any(plugin_page))
+        .route("/plugins/{name}/{*path}", any(plugin_page))
         .route("/beschreibungen", get(|| async { Html(include_str!("web/descriptions.html")) }))
         .route("/api/descriptions", get(search_descriptions).put(put_description).delete(delete_description))
         // Große Adressbücher (z. B. 86 000 Einträge, etwa 5 MB)
@@ -184,13 +215,10 @@ async fn sources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if app.session_user(&headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let stored = match app.db.lock().unwrap().sources() {
-        Ok(list) => list,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let mut list = app.inputs.clone();
-    list.extend(stored.into_iter().filter(|s| !app.inputs.contains(s)));
-    Json(list).into_response()
+    match app.sources() {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -408,6 +436,79 @@ async fn plugins(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
 }
 
+/// Eigene Seite eines Plugins: Dateien aus seinem Ordner `web/`, Anfragen an `api/…` gehen an
+/// das Plugin selbst. Nur für angemeldete Benutzer.
+async fn plugin_page(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(params): AxumPath<HashMap<String, String>>,
+    method: Method,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let Some(user) = app.session_user(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Html("<p>Bitte zuerst <a href=\"/\">in BosLook anmelden</a>.</p>")).into_response();
+    };
+    let Some((plugin, dir)) = app.plugins.get(&params["name"]).and_then(|p| p.web_dir().map(|d| (p, d))) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let path = params.get("path").map_or("", String::as_str);
+    if let Some(api) = path.strip_prefix("api/").or((path == "api").then_some("")) {
+        let request = serde_json::json!({
+            "method": method.as_str(),
+            "path": format!("/{api}"),
+            "query": query.unwrap_or_default(),
+            "body": String::from_utf8_lossy(&body),
+            "user": user,
+        });
+        return match plugin.http(request).await {
+            Ok(r) => plugin_response(&r),
+            Err(e) => error(StatusCode::BAD_GATEWAY, format!("Plugin '{}': {e:#}", params["name"])),
+        };
+    }
+    if method != Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    let file = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.to_string() };
+    // Nur Dateien innerhalb von web/
+    if std::path::Path::new(&file).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(dir.join(&file)).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type(&file)), (header::CACHE_CONTROL, "no-cache")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Antwort des Plugins: `status` (Standard 200) und entweder `json` oder `body` mit `content_type`
+fn plugin_response(r: &serde_json::Value) -> Response {
+    let status = r["status"].as_u64().and_then(|s| StatusCode::from_u16(s as u16).ok()).unwrap_or(StatusCode::OK);
+    let (content_type, body) = match r.get("json") {
+        Some(json) => ("application/json".to_string(), json.to_string()),
+        None => (
+            r["content_type"].as_str().unwrap_or("text/plain; charset=utf-8").to_string(),
+            r["body"].as_str().unwrap_or_default().to_string(),
+        ),
+    };
+    (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
+}
+
+fn content_type(file: &str) -> &'static str {
+    match file.rsplit('.').next().unwrap_or_default() {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css",
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
 fn error(status: StatusCode, e: impl std::fmt::Display) -> Response {
     (status, format!("{e:#}")).into_response()
 }
@@ -501,5 +602,28 @@ async fn export_descriptions(State(app): State<Arc<App>>, headers: HeaderMap) ->
             .into_response(),
         Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body(r: Response) -> (StatusCode, String, String) {
+        let ct = r.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+        let status = r.status();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        (status, ct, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn plugin_responses() {
+        let json = body(plugin_response(&serde_json::json!({"json": {"a": 1}}))).await;
+        assert_eq!(json, (StatusCode::OK, "application/json".into(), "{\"a\":1}".into()));
+        let text = body(plugin_response(&serde_json::json!({"status": 404, "body": "weg"}))).await;
+        assert_eq!(text, (StatusCode::NOT_FOUND, "text/plain; charset=utf-8".into(), "weg".into()));
+        let html = body(plugin_response(&serde_json::json!({"content_type": "text/html", "body": "<p>"}))).await;
+        assert_eq!(html.1, "text/html");
+        assert_eq!(content_type("web/app.js"), "text/javascript");
     }
 }
