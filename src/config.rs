@@ -130,7 +130,11 @@ fn default_decoders() -> Vec<String> {
 impl Config {
     pub fn load(path: &str) -> Result<Config> {
         let text = std::fs::read_to_string(path).with_context(|| format!("Konfiguration {path}"))?;
-        toml::from_str(&text).with_context(|| format!("Konfiguration {path}"))
+        Config::parse(&text).with_context(|| format!("Konfiguration {path}"))
+    }
+
+    pub fn parse(text: &str) -> Result<Config> {
+        Ok(toml::from_str(text)?)
     }
 }
 

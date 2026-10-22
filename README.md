@@ -76,6 +76,12 @@ Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus versch
 Reihenfolge und der zuletzt gewählte Reiter werden im Browser gespeichert. Neue Telegramme
 in anderen Reitern werden als Zahl am Reiter angezeigt.
 
+Unter „Einstellungen" lässt sich die Konfigurationsdatei direkt bearbeiten. Beim Speichern
+wird sie geprüft; ist etwas falsch, wird nichts gespeichert und der Fehler mit Zeilenangabe
+angezeigt. „Speichern und neu starten" startet BosLook mit der neuen Konfiguration neu
+(danach ist eine neue Anmeldung nötig). Jeder angemeldete Benutzer kann die Konfiguration
+einschließlich Passwort-Hashes und Tokens sehen und ändern.
+
 ## Benachrichtigungen
 
 `[[notifier]]` legt ein Ziel fest (Telegram, E-Mail oder Pushover), `[[alarm]]` eine Regel mit

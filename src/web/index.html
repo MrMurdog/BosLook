@@ -49,6 +49,10 @@
   #login input { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   #login button { width: 100%; margin-top: 16px; }
   #error { color: var(--accent); min-height: 1.4em; margin-top: 8px; }
+  #settings textarea { width: 100%; height: calc(100vh - 190px); font: 13px/1.4 ui-monospace, monospace; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); resize: vertical; }
+  #settings .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #settings-msg { white-space: pre-wrap; font-size: 13px; }
+  #settings-msg.err { color: var(--accent); font-family: ui-monospace, monospace; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -65,9 +69,19 @@
   <header>
     <h1>Bos<span>Look</span></h1>
     <span id="status" class="off">getrennt</span>
+    <button id="settings-btn">Einstellungen</button>
     <button id="logout">Abmelden</button>
   </header>
-  <main>
+  <main id="settings" hidden>
+    <div class="bar">
+      <button id="settings-back">Zurück</button>
+      <button id="save" class="primary">Speichern</button>
+      <button id="save-restart">Speichern und neu starten</button>
+      <span id="settings-msg"></span>
+    </div>
+    <textarea id="config" spellcheck="false"></textarea>
+  </main>
+  <main id="telegrams">
     <p id="empty">Noch keine Quellen vorhanden.</p>
     <nav id="tabs"></nav>
     <div id="panels"></div>
@@ -220,6 +234,7 @@ function showLogin() {
 
 async function showApp() {
   $("login").hidden = true; $("app").hidden = false;
+  showSettings(false);
   $("panels").innerHTML = ""; $("tabs").innerHTML = "";
   panels.clear(); active = null; $("empty").hidden = false;
   wanted = load("boslook.active", null);
@@ -241,6 +256,38 @@ $("login").onsubmit = async (e) => {
   if (res.ok) { $("password").value = ""; showApp(); }
   else $("error").textContent = "Benutzer oder Passwort falsch";
 };
+function showSettings(on) {
+  $("settings").hidden = !on; $("telegrams").hidden = on;
+  $("settings-btn").hidden = on;
+}
+
+$("settings-btn").onclick = async () => {
+  const res = await fetch("/api/config");
+  if (res.status === 401) return showLogin();
+  $("config").value = await res.text();
+  $("settings-msg").textContent = ""; $("settings-msg").className = "";
+  showSettings(true);
+};
+$("settings-back").onclick = () => showSettings(false);
+
+async function saveConfig(restart) {
+  const msg = $("settings-msg");
+  const res = await fetch("/api/config", { method: "PUT", body: $("config").value });
+  if (res.status === 401) return showLogin();
+  if (!res.ok) {
+    msg.className = "err"; msg.textContent = "Nicht gespeichert: " + await res.text();
+    return;
+  }
+  msg.className = "";
+  if (!restart) { msg.textContent = "Gespeichert. Wirksam nach einem Neustart."; return; }
+  msg.textContent = "Gespeichert, BosLook startet neu …";
+  await fetch("/api/restart", { method: "POST" });
+  // Sitzungen gehen beim Neustart verloren, darum danach neu anmelden
+  setTimeout(() => location.reload(), 3000);
+}
+$("save").onclick = () => saveConfig(false);
+$("save-restart").onclick = () => saveConfig(true);
+
 $("logout").onclick = async () => { await fetch("/api/logout", { method: "POST" }); showLogin(); };
 
 fetch("/api/me").then((r) => (r.ok ? showApp() : showLogin()));

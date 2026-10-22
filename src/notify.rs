@@ -126,6 +126,11 @@ impl Notify {
     }
 }
 
+/// Prüft die Alarmregeln, ohne Threads zu starten.
+pub fn check(alarms: &[AlarmConfig], notifiers: &[NotifierConfig]) -> Result<()> {
+    alarms.iter().try_for_each(|a| compile(a, notifiers).map(|_| ()))
+}
+
 fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
     let filter = Filter::new(&FilterConfig {
         name: a.name.clone(),

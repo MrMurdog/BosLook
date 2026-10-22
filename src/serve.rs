@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-pub async fn run(config_path: &str) -> Result<()> {
-    let config = Config::load(config_path)?;
+/// Prüft die Konfiguration, ohne etwas zu starten (auch für den Config-Editor).
+pub fn validate(config: &Config) -> Result<()> {
     if config.web.is_some() && config.users.is_empty() {
         bail!("Kein Benutzer konfiguriert. Passwort-Hash erzeugen mit: boslook hash-password");
     }
@@ -43,6 +43,19 @@ pub async fn run(config_path: &str) -> Result<()> {
     {
         bail!("[weather]: mindestens eine Warncell-ID und interval von mindestens 60 Sekunden angeben");
     }
+    config.web.as_ref().map(|w| w.listen.parse::<SocketAddr>()).transpose().context("web.listen")?;
+    Filters::new(&config.filters)?;
+    crate::notify::check(&config.alarms, &config.notifiers)?;
+    Ok(())
+}
+
+pub async fn run(config_path: &str) -> Result<()> {
+    if std::env::var_os(RESTART_WAIT).is_some() {
+        // Windows: warten, bis der alte Prozess den Port freigegeben hat (siehe restart())
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    let config = Config::load(config_path)?;
+    validate(&config)?;
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let filters = Arc::new(Filters::new(&config.filters)?);
     let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
@@ -61,6 +74,7 @@ pub async fn run(config_path: &str) -> Result<()> {
                 .collect(),
             secure_cookie: config.web.as_ref().is_some_and(|w| w.tls != Tls::Off),
             clients: config.clients,
+            config_path: config_path.to_string(),
             ingest: tx.clone(),
             filters: filters.clone(),
         },
@@ -160,6 +174,30 @@ fn run_input(input: &InputConfig, filters: &Filters, tx: &mpsc::Sender<Telegram>
         },
     }
     Ok(())
+}
+
+const RESTART_WAIT: &str = "BOSLOOK_RESTART_WAIT";
+
+/// Startet BosLook mit denselben Argumenten neu (nach Änderungen im Config-Editor).
+pub fn restart() -> ! {
+    let exe = std::env::current_exe().expect("Programmpfad");
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        // Ersetzt den laufenden Prozess; stdin (z. B. von rtl_fm) bleibt dabei erhalten
+        use std::os::unix::process::CommandExt;
+        let e = command.exec();
+        eprintln!("Neustart fehlgeschlagen: {e}");
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = command.env(RESTART_WAIT, "1").spawn() {
+            eprintln!("Neustart fehlgeschlagen: {e}");
+        }
+        std::process::exit(0);
+    }
 }
 
 /// Erstellt ein selbst signiertes Zertifikat, falls noch keins vorhanden ist.

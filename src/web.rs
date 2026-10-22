@@ -30,6 +30,7 @@ pub struct App {
     /// Weg zur Speicherung für Telegramme von Clients
     ingest: mpsc::Sender<Telegram>,
     filters: Arc<Filters>,
+    config_path: String,
 }
 
 pub struct Settings {
@@ -39,6 +40,7 @@ pub struct Settings {
     pub clients: Vec<ClientConfig>,
     pub ingest: mpsc::Sender<Telegram>,
     pub filters: Arc<Filters>,
+    pub config_path: String,
 }
 
 impl App {
@@ -53,6 +55,7 @@ impl App {
             clients: s.clients,
             ingest: s.ingest,
             filters: s.filters,
+            config_path: s.config_path,
         }
     }
 
@@ -77,6 +80,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/telegrams", get(telegrams))
         .route("/api/live", get(live))
         .route("/api/ingest", get(ingest))
+        .route("/api/config", get(get_config).put(put_config))
+        .route("/api/restart", post(restart))
         .with_state(app)
 }
 
@@ -220,4 +225,53 @@ async fn receive(mut socket: WebSocket, app: Arc<App>, name: String) {
         }
     }
     eprintln!("Client '{name}' getrennt");
+}
+
+async fn get_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match std::fs::read_to_string(&app.config_path) {
+        Ok(text) => text.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Neue Konfiguration prüfen und speichern. Wirksam wird sie erst nach einem Neustart.
+async fn put_config(State(app): State<Arc<App>>, headers: HeaderMap, text: String) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let checked = crate::config::Config::parse(&text).and_then(|c| {
+        if c.web.is_none() {
+            anyhow::bail!("[web] fehlt, die Weboberfläche wäre danach nicht mehr erreichbar");
+        }
+        crate::serve::validate(&c)
+    });
+    if let Err(e) = checked {
+        return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+    }
+    // Erst in eine temporäre Datei schreiben, damit die Konfiguration nie halb gespeichert ist
+    let tmp = format!("{}.tmp", app.config_path);
+    let result = std::fs::write(&tmp, &text)
+        .and_then(|_| std::fs::metadata(&app.config_path))
+        .and_then(|m| std::fs::set_permissions(&tmp, m.permissions()))
+        .and_then(|_| std::fs::rename(&tmp, &app.config_path));
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn restart(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    eprintln!("Neustart über die Weboberfläche");
+    tokio::spawn(async {
+        // Antwort noch ausliefern lassen
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        crate::serve::restart();
+    });
+    StatusCode::ACCEPTED.into_response()
 }
