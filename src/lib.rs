@@ -9,6 +9,7 @@ pub mod form;
 pub mod forward;
 pub mod input;
 pub mod notify;
+pub mod rewrite;
 pub mod serve;
 pub mod telegram;
 pub mod weather;

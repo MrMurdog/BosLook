@@ -1,6 +1,6 @@
 [package]
 name = "boslook"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 
 [features]
@@ -54,3 +54,8 @@ webpki-roots = "1.0.10"
 # Unter Linux über X11 (auch XWayland) starten, siehe src/desktop/main.rs
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.30", optional = true, default-features = false, features = ["x11"] }
+
+# Debug-Builds nur mit Zeilennummern: Fehlermeldungen zeigen Datei und Zeile, das
+# Build-Verzeichnis bleibt deutlich kleiner
+[profile.dev]
+debug = "line-tables-only"

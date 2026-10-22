@@ -237,6 +237,11 @@ impl App {
                 FromClient::Descriptions(result) => self.descriptions.page(result),
                 FromClient::DescriptionSaved { row, result } => self.descriptions.saved(row, result),
                 FromClient::DescriptionsChanged(result) => self.descriptions.changed(result),
+                FromClient::RewriteTested(result) => {
+                    if let Some(form) = &mut self.server.form {
+                        form.test.result(result);
+                    }
+                }
             }
         }
     }
@@ -365,6 +370,9 @@ impl App {
             self.send(if self.server.text_mode { ToClient::LoadServerConfig } else { ToClient::LoadServerForm });
         }
         self.server.show(ui);
+        if let Some(body) = self.server.form.as_mut().and_then(|f| f.test.request.take()) {
+            self.send(ToClient::TestRewrite(body));
+        }
     }
 
     fn send(&mut self, cmd: ToClient) {

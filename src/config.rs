@@ -1,5 +1,6 @@
 use crate::filter::FilterConfig;
 use crate::notify::{AlarmConfig, NotifierConfig};
+use crate::rewrite::RewriteConfig;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
@@ -19,6 +20,8 @@ pub struct Config {
     pub forward: Option<ForwardConfig>,
     #[serde(default, rename = "input")]
     pub inputs: Vec<InputConfig>,
+    #[serde(default, rename = "rewrite")]
+    pub rewrites: Vec<RewriteConfig>,
     #[serde(default, rename = "filter")]
     pub filters: Vec<FilterConfig>,
     #[serde(default, rename = "notifier")]

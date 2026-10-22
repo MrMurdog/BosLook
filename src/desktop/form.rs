@@ -11,6 +11,74 @@ pub struct Form {
     original: Value,
     /// Soundkarten des Servers als (ID, Beschreibung)
     devices: Vec<(String, String)>,
+    /// Testfeld unter den Bearbeitungsregeln (nur Serverkonfiguration)
+    pub test: RewriteTest,
+}
+
+pub struct RewriteTest {
+    kind: String,
+    address: String,
+    sub: String,
+    message: String,
+    /// Anfrage an `/api/rewrite/test`, die das Hauptfenster abholt und sendet
+    pub request: Option<Value>,
+    result: Option<Result<String, String>>,
+}
+
+impl Default for RewriteTest {
+    fn default() -> RewriteTest {
+        RewriteTest { kind: "pocsag".into(), address: String::new(), sub: "a".into(), message: String::new(), request: None, result: None }
+    }
+}
+
+impl RewriteTest {
+    /// Antwort des Servers
+    pub fn result(&mut self, result: Result<Value, String>) {
+        self.result = Some(result.map(|r| {
+            let t = &r["telegram"];
+            let mut text = format!("→ {}{}: {}", str(&t["address"]), str(&t["sub"]), str(&t["message"]));
+            let described: Vec<&str> = ["ort", "kurz", "lang"].iter().map(|k| str(&t[*k])).filter(|s| !s.is_empty()).collect();
+            if !described.is_empty() {
+                text += &format!("\n{}", described.join(" · "));
+            }
+            match str(&r["applied"]) {
+                "" => text + "\nKeine Regel passt",
+                applied => text + &format!("\nRegeln: {applied}"),
+            }
+        }));
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, kinds: &Value, rules: &Value) {
+        let mut run = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Telegramm testen");
+            egui::ComboBox::from_id_salt("test-kind").selected_text(self.kind.to_uppercase()).show_ui(ui, |ui| {
+                for k in kinds.as_array().into_iter().flatten().map(str) {
+                    run |= ui.selectable_value(&mut self.kind, k.to_string(), k.to_uppercase()).clicked();
+                }
+            });
+            run |= ui.add(egui::TextEdit::singleline(&mut self.address).hint_text("Adresse").desired_width(90.0)).changed();
+            egui::ComboBox::from_id_salt("test-sub").selected_text(&self.sub).width(40.0).show_ui(ui, |ui| {
+                for x in ["a", "b", "c", "d"] {
+                    run |= ui.selectable_value(&mut self.sub, x.to_string(), x).clicked();
+                }
+            });
+            run |= ui.add(egui::TextEdit::singleline(&mut self.message).hint_text("Meldung").desired_width(320.0)).changed();
+            run |= ui.button("Testen").clicked();
+        });
+        match &self.result {
+            Some(Ok(text)) => {
+                ui.label(RichText::new(text).monospace());
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(crate::RED));
+            }
+            None => {}
+        }
+        if run && !self.address.trim().is_empty() {
+            self.request = Some(json!({ "rules": rules, "kind": self.kind, "address": self.address, "sub": self.sub, "message": self.message }));
+        }
+    }
 }
 
 impl Form {
@@ -29,7 +97,7 @@ impl Form {
                 _ => {}
             }
         }
-        Form { schema, original: values.clone(), values, devices }
+        Form { schema, original: values.clone(), values, devices, test: RewriteTest::default() }
     }
 
     /// Antwort von `/api/config/form`
@@ -48,7 +116,7 @@ impl Form {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        let Form { schema, values, devices, .. } = self;
+        let Form { schema, values, devices, test, .. } = self;
         let all = values.clone();
         for section in schema.as_array().into_iter().flatten() {
             let key = str(&section["key"]);
@@ -92,6 +160,11 @@ impl Form {
                         ui.separator();
                         if ui.button("+ Hinzufügen").clicked() {
                             list.push(new_item(fields));
+                        }
+                        if key == "rewrite" {
+                            ui.separator();
+                            let kinds = fields.as_array().into_iter().flatten().find(|f| f["key"] == "kind").map_or(&Value::Null, |f| &f["input"]["options"]);
+                            test.show(ui, kinds, &values[key]);
                         }
                     }
                 }
@@ -184,6 +257,37 @@ impl Ctx<'_> {
                         }
                     }
                 });
+            }
+            "pairs" => {
+                // Erst beim Hinzufügen eine Liste anlegen, sonst gälte schon das Zeichnen als Änderung
+                let mut remove = None;
+                for (i, item) in value.as_array_mut().into_iter().flatten().enumerate() {
+                    ui.push_id(i, |ui| {
+                        ui.horizontal(|ui| {
+                            let width = (ui.available_width() - 40.0) / options.len() as f32;
+                            for (n, label) in f["input"]["options"].as_array().into_iter().flatten().enumerate() {
+                                let k = str(&label[0]);
+                                let mut text = str(&item[k]).to_string();
+                                let edit = egui::TextEdit::singleline(&mut text).hint_text(str(&label[1])).font(egui::TextStyle::Monospace).desired_width(width);
+                                if ui.push_id(n, |ui| ui.add(edit)).inner.changed() {
+                                    item[k] = text.into();
+                                }
+                            }
+                            if ui.button("×").on_hover_text("Entfernen").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let (Some(i), Some(list)) = (remove, value.as_array_mut()) {
+                    list.remove(i);
+                }
+                if ui.button("+").on_hover_text("Hinzufügen").clicked() {
+                    if !value.is_array() {
+                        *value = json!([]);
+                    }
+                    value.as_array_mut().expect("Liste").push(json!({}));
+                }
             }
             "lines" | "multiline" => {
                 let mut text = match &*value {

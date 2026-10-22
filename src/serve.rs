@@ -1,10 +1,11 @@
-//! `boslook serve`: Eingänge dekodieren, filtern, speichern und per Weboberfläche anzeigen.
+//! `boslook serve`: Eingänge dekodieren, bearbeiten, filtern, speichern und per Weboberfläche anzeigen.
 
 use crate::config::{Config, InputConfig, Source, Tls};
 use crate::db::Db;
 use crate::decoder::Bank;
 use crate::filter::Filters;
 use crate::notify::Notify;
+use crate::rewrite::Rewrites;
 use crate::telegram::{Decoded, Telegram};
 use crate::web::{self, App, Settings};
 use crate::{forward, input};
@@ -44,6 +45,7 @@ pub fn validate(config: &Config) -> Result<()> {
         bail!("[weather]: mindestens eine Warncell-ID und interval von mindestens 60 Sekunden angeben");
     }
     config.web.as_ref().map(|w| w.listen.parse::<SocketAddr>()).transpose().context("web.listen")?;
+    Rewrites::new(&config.rewrites)?;
     Filters::new(&config.filters)?;
     crate::notify::check(&config.alarms, &config.notifiers)?;
     Ok(())
@@ -57,6 +59,7 @@ pub async fn run(config_path: &str) -> Result<()> {
     let config = Config::load(config_path)?;
     validate(&config)?;
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
+    let rewrites = Rewrites::new(&config.rewrites)?;
     let filters = Filters::new(&config.filters)?;
     let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
@@ -101,10 +104,10 @@ pub async fn run(config_path: &str) -> Result<()> {
     let store = app.clone();
     tokio::spawn(async move {
         while let Some(mut t) = rx.recv().await {
-            // Erst nachschlagen, dann filtern: Filter können auch Ort und Beschreibungen prüfen
+            // Erst nachschlagen und bearbeiten, dann filtern: Filter können auch Ort und Beschreibungen prüfen
             {
                 let db = store.db.lock().unwrap();
-                if let Err(e) = db.describe(&mut t) {
+                if let Err(e) = rewrites.describe_and_apply(&db, &mut t) {
                     eprintln!("Datenbank: {e:#}");
                 }
                 if !filters.allows(&t) {

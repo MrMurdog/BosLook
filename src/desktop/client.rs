@@ -34,6 +34,8 @@ pub enum FromClient {
     DescriptionSaved { row: u64, result: Result<Description, String> },
     /// Ergebnis von Löschen, Import und Export; danach die Seite neu laden
     DescriptionsChanged(Result<String, String>),
+    /// Ergebnis des Testfelds der Bearbeitungsregeln
+    RewriteTested(Result<serde_json::Value, String>),
 }
 
 pub enum ToClient {
@@ -46,6 +48,7 @@ pub enum ToClient {
     DeleteDescription(String),
     ImportDescriptions { path: std::path::PathBuf, clear: bool },
     ExportDescriptions(std::path::PathBuf),
+    TestRewrite(serde_json::Value),
 }
 
 /// Startet die Verbindung in einem eigenen Thread. Jede Nachricht an die Oberfläche weckt sie über `wake` auf.
@@ -99,6 +102,7 @@ fn not_connected(cmd: ToClient) -> FromClient {
         ToClient::DeleteDescription(_) | ToClient::ImportDescriptions { .. } | ToClient::ExportDescriptions(_) => {
             FromClient::DescriptionsChanged(Err(e))
         }
+        ToClient::TestRewrite(_) => FromClient::RewriteTested(Err(e)),
     }
 }
 
@@ -224,6 +228,11 @@ async fn session(
                     }
                     .await;
                     send(FromClient::DescriptionsChanged(result.map_err(|e| format!("Export fehlgeschlagen: {e:#}"))));
+                }
+                Some(ToClient::TestRewrite(body)) => {
+                    let request = http.post(format!("{base}/api/rewrite/test")).header(COOKIE, &cookie).json(&body);
+                    let result = async { anyhow::Ok(checked(request).await?.json().await?) }.await;
+                    send(FromClient::RewriteTested(result.map_err(|e| format!("{e:#}"))));
                 }
             },
         }

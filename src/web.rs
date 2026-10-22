@@ -2,7 +2,7 @@ use crate::config::{ClientConfig, UserConfig};
 use crate::db::Db;
 use crate::descriptions::{self, Description, Search};
 use crate::forward::{Ack, Envelope};
-use crate::telegram::Telegram;
+use crate::telegram::{Decoded, Kind, Telegram};
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::body::Bytes;
@@ -111,6 +111,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
+        .route("/api/rewrite/test", post(test_rewrite))
         .route("/beschreibungen", get(|| async { Html(include_str!("web/descriptions.html")) }))
         .route("/api/descriptions", get(search_descriptions).put(put_description).delete(delete_description))
         // Große Adressbücher (z. B. 86 000 Einträge, etwa 5 MB)
@@ -348,6 +349,42 @@ async fn restart(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         crate::serve::restart();
     });
     StatusCode::ACCEPTED.into_response()
+}
+
+#[derive(Deserialize)]
+struct RewriteTest {
+    /// Regeln aus dem Formular, noch nicht gespeichert
+    rules: serde_json::Value,
+    kind: Kind,
+    address: String,
+    #[serde(default)]
+    sub: String,
+    #[serde(default)]
+    message: String,
+}
+
+/// Testfeld im Formular: Was machen die Bearbeitungsregeln aus diesem Telegramm?
+async fn test_rewrite(State(app): State<Arc<App>>, headers: HeaderMap, Json(test): Json<RewriteTest>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let rules = crate::rewrite::Rewrites::from_form(&test.rules)?;
+        let mut address = test.address.trim().to_string();
+        if test.kind == Kind::Pocsag && let Ok(ric) = address.parse::<u32>() {
+            address = format!("{ric:07}");
+        }
+        let decoded = Decoded { kind: test.kind, address, sub: test.sub, message: test.message };
+        let mut t = Telegram::new(decoded, "Test", chrono::Local::now());
+        let applied = rules.describe_and_apply(&app.db.lock().unwrap(), &mut t)?.join(", ");
+        anyhow::Ok(serde_json::json!({ "telegram": t, "applied": applied }))
+    })
+    .await;
+    match result {
+        Ok(Ok(r)) => Json(r).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_REQUEST, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }
 
 fn error(status: StatusCode, e: impl std::fmt::Display) -> Response {

@@ -70,6 +70,12 @@
   #cfg-form .row small { grid-column: 2; color: var(--muted); font-size: 12px; }
   #cfg-form input:not([type=checkbox]), #cfg-form select, #cfg-form textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   #cfg-form textarea { height: auto; resize: vertical; }
+  #cfg-form .pair { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin-bottom: 6px; }
+  #cfg-form .pair input { font-family: ui-monospace, monospace; }
+  #cfg-form .test { display: grid; grid-template-columns: 7rem 1fr 4rem; gap: 6px; }
+  #cfg-form .test .message { grid-column: 1 / -1; }
+  #cfg-form .test-result { grid-column: 2; white-space: pre-wrap; font-size: 13px; }
+  #cfg-form .test-result.err { color: var(--danger); }
   #cfg-form .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-top: 6px; }
   #cfg-form .req { color: var(--danger); }
   @media (max-width: 640px) { #cfg-form .row { grid-template-columns: 1fr; } #cfg-form .row small { grid-column: 1; } #cfg-form .row > span:first-child { padding-top: 0; } }
@@ -449,14 +455,48 @@ function section(s) {
     const add = el("button", "", "+ Hinzufügen"); add.type = "button";
     add.onclick = () => { list.push(newItem(s)); renderForm(); };
     box.append(add);
+    if (s.key === "rewrite") box.append(rewriteTest(s));
   }
   return box;
+}
+
+// Testfeld unter den Bearbeitungsregeln; die Regeln kommen ungespeichert aus dem Formular
+const testValues = { kind: "pocsag", address: "", sub: "a", message: "" };
+function rewriteTest(s) {
+  const row = el("div", "row");
+  const controls = el("div", "test");
+  const result = el("small", "test-result");
+  const kind = el("select");
+  for (const k of s.fields.find((f) => f.key === "kind").input.options) kind.append(new Option(k.toUpperCase(), k, false, k === testValues.kind));
+  const address = el("input"); address.placeholder = "Adresse"; address.value = testValues.address;
+  const sub = el("select");
+  for (const x of ["a", "b", "c", "d"]) sub.append(new Option(x, x, false, x === testValues.sub));
+  const message = el("input", "message"); message.placeholder = "Meldung"; message.value = testValues.message;
+  const button = el("button", "", "Testen"); button.type = "button";
+  let timer = null;
+  const run = async () => {
+    Object.assign(testValues, { kind: kind.value, address: address.value, sub: sub.value, message: message.value });
+    if (!address.value.trim()) return (result.textContent = "");
+    const res = await fetch("/api/rewrite/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: cfg.values.rewrite ?? [], ...testValues }) });
+    if (!res.ok) { result.className = "test-result err"; result.textContent = await res.text(); return; }
+    const { telegram: t, applied } = await res.json();
+    const described = [t.ort, t.kurz, t.lang].filter(Boolean).join(" · ");
+    result.className = "test-result";
+    result.textContent = `→ ${t.address}${t.sub}: ${t.message}` + (described ? `\n${described}` : "") + `\n${applied ? "Regeln: " + applied : "Keine Regel passt"}`;
+  };
+  for (const e of [kind, sub]) e.onchange = run;
+  for (const e of [address, message]) e.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 300); };
+  button.onclick = run;
+  controls.append(kind, address, sub, message, button);
+  row.append(el("span", "", "Telegramm testen"), controls, result);
+  if (testValues.address) run();
+  return row;
 }
 
 function fields(list, obj) {
   return list.filter((f) => !f.when || f.when[1].includes(obj[f.when[0]])).map((f) => {
     // Mehrfachauswahl nicht in ein <label>, sonst schaltet ein Klick auf den Namen das erste Kästchen
-    const row = el(["choices", "names"].includes(f.input.type) ? "div" : "label", "row");
+    const row = el(["choices", "names", "pairs"].includes(f.input.type) ? "div" : "label", "row");
     const name = el("span", "", f.label);
     if (f.required) name.append(el("span", "req", " *"));
     row.append(name, input(f, obj));
@@ -497,6 +537,29 @@ function input(f, obj) {
       const l = el("label"); l.append(c, " " + o);
       wrap.append(l);
     }
+    return wrap;
+  }
+  if (type === "pairs") {
+    const list = obj[f.key] ??= [];
+    const wrap = el("div");
+    const draw = () => {
+      wrap.replaceChildren(...list.map((item, i) => {
+        const line = el("div", "pair");
+        for (const [k, label] of f.input.options) {
+          const e = el("input"); e.placeholder = label; e.value = item[k] ?? ""; e.spellcheck = false;
+          e.oninput = () => { item[k] = e.value; };
+          line.append(e);
+        }
+        const remove = el("button", "", "×"); remove.type = "button"; remove.title = "Entfernen";
+        remove.onclick = () => { list.splice(i, 1); draw(); };
+        line.append(remove);
+        return line;
+      }));
+      const add = el("button", "", "+"); add.type = "button"; add.title = "Hinzufügen";
+      add.onclick = () => { list.push({}); draw(); wrap.querySelectorAll("input")[list.length * f.input.options.length - f.input.options.length].focus(); };
+      wrap.append(add);
+    };
+    draw();
     return wrap;
   }
   if (type === "lines" || type === "multiline") {

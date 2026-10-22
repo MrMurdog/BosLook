@@ -67,6 +67,9 @@ pub enum Input {
     Names(&'static str),
     /// Soundkarte des Servers, leer = Standardgerät
     Device,
+    /// Liste von Einträgen mit den Textfeldern (Schlüssel, Beschriftung), in der Datei als
+    /// `[[abschnitt.feld]]`; Einträge mit leerem ersten Feld fallen weg
+    Pairs(Vec<(&'static str, &'static str)>),
 }
 
 pub fn field(key: &'static str, label: &'static str, input: Input) -> Field {
@@ -186,6 +189,25 @@ pub fn server_schema() -> Vec<Section> {
                     .default("alpha")
                     .help("auto: Sub a als Ziffern, sonst als Text"),
             ],
+        },
+        Section {
+            key: "rewrite",
+            title: "Bearbeitung",
+            help: "Passende Regeln ändern das Telegramm der Reihe nach, bevor gefiltert und gespeichert wird.",
+            kind: SectionKind::List,
+            fields: [
+                vec![name()],
+                match_fields(),
+                vec![
+                    field("replace", "Ersetzungen", Input::Pairs(vec![("pattern", "Suchen (regulärer Ausdruck)"), ("with", "Ersetzen durch")]))
+                        .help("In der Meldung, nacheinander; $1, $2 … = Klammern aus dem Suchausdruck"),
+                    field("address_add", "RIC addieren", Input::Number).help("Nur POCSAG, z. B. 1000 oder -1000"),
+                    field("stop", "Danach keine weiteren Regeln", Input::Bool).default(false),
+                ],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         },
         Section {
             key: "filter",
@@ -344,7 +366,7 @@ pub fn apply(text: &str, schema: &[Section], form: &Value) -> Result<String> {
 
 fn fill(table: &mut Table, fields: &[Field], item: &Value, context: &str) -> Result<()> {
     for f in fields {
-        let old = table.get(f.key).and_then(Item::as_value).map(value_to_json);
+        let old = table.get(f.key).and_then(item_to_json);
         let new = if f.active(item) { convert(f, item.get(f.key), old.as_ref(), context)? } else { None };
         let Some(new) = new else {
             if f.required && f.active(item) {
@@ -357,6 +379,11 @@ fn fill(table: &mut Table, fields: &[Field], item: &Value, context: &str) -> Res
             Some(old) if *old == new => continue,
             None if f.default.as_ref() == Some(&new) => continue,
             _ => {}
+        }
+        if let Input::Pairs(_) = f.input {
+            let tables = new.as_array().into_iter().flatten().map(json_to_table).collect::<Result<_>>()?;
+            table.insert(f.key, Item::ArrayOfTables(tables));
+            continue;
         }
         let mut value = json_to_toml(&new).with_context(|| format!("{context}: {}", f.label))?;
         // Kommentar hinter dem alten Wert behalten
@@ -380,7 +407,7 @@ fn convert(f: &Field, value: Option<&Value>, old: Option<&Value>, context: &str)
         },
         (Input::Number, Value::String(s)) if s.trim().is_empty() => None,
         (Input::Number, Value::String(s)) => {
-            Some(s.trim().parse::<u64>().map_err(|_| anyhow::anyhow!("{context}: {} ist keine Zahl", f.label))?.into())
+            Some(s.trim().parse::<i64>().map_err(|_| anyhow::anyhow!("{context}: {} ist keine Zahl", f.label))?.into())
         }
         (Input::Number, Value::Number(_)) | (Input::Bool, Value::Bool(_)) => Some(value.clone()),
         (Input::Lines, Value::String(s)) => {
@@ -389,6 +416,18 @@ fn convert(f: &Field, value: Option<&Value>, old: Option<&Value>, context: &str)
         }
         (Input::Lines | Input::Choices(_) | Input::Names(_), Value::Array(a)) => {
             let items: Vec<Value> = a.iter().filter_map(|v| v.as_str().and_then(text)).collect();
+            (!items.is_empty()).then(|| items.into())
+        }
+        (Input::Pairs(keys), Value::Array(a)) => {
+            // Ohne trim: Leerzeichen sind in Such- und Ersatztext Absicht
+            let items: Vec<Value> = a
+                .iter()
+                .filter(|item| item.get(keys[0].0).and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+                .map(|item| {
+                    let fields = keys.iter().filter_map(|(k, _)| item.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(|s| (k.to_string(), Value::from(s))));
+                    Value::Object(fields.collect())
+                })
+                .collect();
             (!items.is_empty()).then(|| items.into())
         }
         (Input::Text | Input::Multiline | Input::Password | Input::Secret | Input::Select(_) | Input::Device, Value::String(s)) => text(s),
@@ -400,6 +439,23 @@ fn value_to_json(value: &toml_edit::Value) -> Value {
     let mut value = value.clone();
     value.decor_mut().clear();
     toml::from_str::<Value>(&format!("v = {value}")).ok().and_then(|mut v| v.get_mut("v").map(Value::take)).unwrap_or(Value::Null)
+}
+
+fn item_to_json(item: &Item) -> Option<Value> {
+    match item {
+        Item::Value(value) => Some(value_to_json(value)),
+        Item::ArrayOfTables(tables) => tables.iter().map(|t| toml::from_str(&t.to_string()).ok()).collect::<Option<Vec<Value>>>().map(Value::from),
+        _ => None,
+    }
+}
+
+/// Eintrag für `[[abschnitt.feld]]`; ohne eigene Position landet er direkt unter seinem Abschnitt
+fn json_to_table(item: &Value) -> Result<Table> {
+    let mut table = Table::new();
+    for (k, v) in item.as_object().into_iter().flatten() {
+        table.insert(k, Item::Value(json_to_toml(v)?));
+    }
+    Ok(table)
 }
 
 fn json_to_toml(value: &Value) -> Result<toml_edit::Value> {
@@ -533,6 +589,21 @@ pocsag = "auto"
         let mut form = to_json(&text, &schema).unwrap();
         form["weather"] = Value::Null;
         assert!(!apply(&text, &schema, &form).unwrap().contains("weather"));
+    }
+
+    #[test]
+    fn rewrite_replacements_as_nested_tables() {
+        let text = roundtrip(|f| {
+            f["rewrite"] = json!([{"name": "Stichwort", "replace": [{"pattern": "^F(\\d)", "with": "Feuer $1"}, {"pattern": " +", "with": " "}, {"pattern": "", "with": "weg"}], "address_add": "-1000"}]);
+        })
+        .unwrap();
+        let config = crate::config::Config::parse(&text).unwrap();
+        let r = &config.rewrites[0];
+        assert_eq!((r.replace.len(), r.replace[1].with.as_str(), r.address_add), (2, " ", Some(-1000)), "{text}");
+        assert!(text.contains("address_add = -1000\n\n[[rewrite.replace]]\npattern = '^F(\\d)'\nwith = \"Feuer $1\"\n"), "{text}");
+        // Unverändert gespeichert bleibt der Text gleich
+        let schema = server_schema();
+        assert_eq!(apply(&text, &schema, &to_json(&text, &schema).unwrap()).unwrap(), text);
     }
 
     #[test]

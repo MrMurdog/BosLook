@@ -60,6 +60,17 @@ sample_rate = 22050
 decoders = ["pocsag512", "pocsag1200"]
 pocsag = "auto"
 
+# Bearbeitungsregeln: ändern Telegramme, bevor gefiltert und gespeichert wird. Bedingung wie
+# bei Filtern, alle passenden Regeln nacheinander; stop = true beendet nach dieser Regel.
+# [[rewrite]]
+# name = "Stichwort ausschreiben"
+# address = "^18599"
+# address_add = 1000          # RIC um 1000 erhöhen (nur POCSAG), negativ = verringern
+#
+# [[rewrite.replace]]         # Ersetzungen in der Meldung, nacheinander
+# pattern = "^F(\\d)\\b"
+# with = "Feuer $1"           # $1, $2 … = Klammern aus pattern
+
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
 # Gibt es Filter ohne "exclude", muss mindestens einer passen.
 # Felder: kind (pocsag/fms/zvei/wetter), address, sub, message und aus den Beschreibungen

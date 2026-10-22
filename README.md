@@ -84,6 +84,31 @@ eingeschränkt auf `kind`. Ein Telegramm wird verworfen, wenn ein Filter mit
 `exclude = true` passt. Gibt es Filter ohne `exclude`, muss mindestens einer davon passen.
 Beispiele stehen in `boslook.example.toml`.
 
+### Bearbeitung
+
+Bearbeitungsregeln (`[[rewrite]]`) ändern Telegramme, bevor sie gefiltert, gespeichert und
+gemeldet werden. Eine Regel hat dieselben Bedingungen wie ein Filter und darunter beliebig viele
+Ersetzungen in der Meldung (regulärer Ausdruck, `$1`, `$2` … übernehmen Klammern) sowie
+`address_add`, das die RIC verschiebt (nur POCSAG; ergäbe sich keine gültige RIC, bleibt sie
+unverändert). Passen mehrere Regeln, werden alle der Reihe nach angewendet, jede sieht das
+Ergebnis der vorherigen; `stop = true` beendet nach dieser Regel.
+
+```toml
+[[rewrite]]
+name = "Stichwort ausschreiben"
+address = "^18599"
+address_add = 1000
+
+[[rewrite.replace]]
+pattern = '^F(\d)\b'
+with = "Feuer $1"
+```
+
+Ablauf: Beschreibung nachschlagen → Bearbeitungsregeln (hat sich die RIC geändert, wird die
+Beschreibung neu nachgeschlagen) → Filter → speichern, Alarme, Anzeige, Weiterleitung. Das gilt
+auch für Telegramme von Clients und für Wetterwarnungen. Im Formular gibt es unter den Regeln
+ein Testfeld, das die noch nicht gespeicherten Regeln auf ein eingetipptes Telegramm anwendet.
+
 ### Weboberfläche
 
 Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus verschieben; die
