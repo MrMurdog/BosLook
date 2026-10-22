@@ -4,3 +4,12 @@
 boslook.toml
 *.db
 *.pem
+
+# Arbeitsdateien (Projektbeschreibung, Fragen/Antworten, KI-Anweisungen) bleiben lokal
+/CLAUDE.md
+/.claude/
+/PROJEKT.md
+/FRAGENKATALOG*.md
+/ANTWORTEN*.md
+/Antworten*.md
+/v*.md
