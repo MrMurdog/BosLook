@@ -7,7 +7,9 @@ use crate::filter::{Filter, FilterConfig};
 use crate::telegram::{Decoded, Kind, Telegram};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 pub struct NotifierConfig {
@@ -46,6 +48,16 @@ pub enum Security {
     None,
 }
 
+/// Bei Pushover: high = Ton auch bei „Nicht stören", emergency = wiederholt, bis bestätigt.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    #[default]
+    Normal,
+    High,
+    Emergency,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlarmConfig {
@@ -56,31 +68,37 @@ pub struct AlarmConfig {
     pub message: Option<String>,
     /// Namen der `[[notifier]]`, die benachrichtigt werden
     pub notify: Vec<String>,
+    #[serde(default)]
+    pub priority: Priority,
 }
 
 struct Alarm {
     name: String,
     filter: Filter,
     targets: Vec<usize>,
+    priority: Priority,
 }
 
 /// Prüft Telegramme gegen die Alarmregeln und gibt Nachrichten an die Ziele weiter.
 /// Jedes Ziel sendet in einem eigenen Thread, damit ein langsamer Dienst die anderen nicht aufhält.
 pub struct Notify {
     alarms: Vec<Alarm>,
-    senders: Vec<mpsc::Sender<(String, String)>>,
+    senders: Vec<mpsc::Sender<(String, String, Priority)>>,
+    /// Gleiche Telegramme innerhalb dieser Zeit nur einmal melden (Alarme werden oft wiederholt)
+    repeat: Duration,
+    seen: HashMap<String, Instant>,
 }
 
 impl Notify {
-    pub fn new(alarms: &[AlarmConfig], notifiers: Vec<NotifierConfig>) -> Result<Notify> {
+    pub fn new(alarms: &[AlarmConfig], notifiers: Vec<NotifierConfig>, repeat: Duration) -> Result<Notify> {
         let alarms = alarms.iter().map(|a| compile(a, &notifiers)).collect::<Result<_>>()?;
         let senders = notifiers
             .into_iter()
             .map(|n| {
-                let (tx, rx) = mpsc::channel::<(String, String)>();
+                let (tx, rx) = mpsc::channel::<(String, String, Priority)>();
                 std::thread::spawn(move || {
-                    for (title, body) in rx {
-                        if let Err(e) = send(&n.target, &title, &body) {
+                    for (title, body, priority) in rx {
+                        if let Err(e) = send(&n.target, &title, &body, priority) {
                             eprintln!("Benachrichtigung '{}': {e:#}", n.name);
                         }
                     }
@@ -88,13 +106,23 @@ impl Notify {
                 tx
             })
             .collect();
-        Ok(Notify { alarms, senders })
+        Ok(Notify { alarms, senders, repeat, seen: HashMap::new() })
     }
 
-    pub fn handle(&self, t: &Telegram) {
-        for (target, title) in targets(&self.alarms, t) {
-            let _ = self.senders[target].send((title, text(t)));
+    pub fn handle(&mut self, t: &Telegram) {
+        if self.is_repeat(t, Instant::now()) {
+            return;
         }
+        for (target, title, priority) in targets(&self.alarms, t) {
+            let _ = self.senders[target].send((title, text(t), priority));
+        }
+    }
+
+    fn is_repeat(&mut self, t: &Telegram, now: Instant) -> bool {
+        let repeat = self.repeat;
+        self.seen.retain(|_, last| now.duration_since(*last) < repeat);
+        let key = format!("{}|{}|{}|{}", t.kind.as_str(), t.address, t.sub, t.message);
+        self.seen.insert(key, now).is_some()
     }
 }
 
@@ -120,23 +148,26 @@ fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
     if targets.is_empty() {
         bail!("Alarm '{}': notify ist leer", a.name);
     }
-    Ok(Alarm { name: a.name.clone(), filter, targets })
+    Ok(Alarm { name: a.name.clone(), filter, targets, priority: a.priority })
 }
 
 /// Welche Ziele mit welchem Titel benachrichtigt werden. Passen mehrere Regeln auf dasselbe
-/// Ziel, gibt es trotzdem nur eine Nachricht.
-fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String)> {
+/// Ziel, gibt es trotzdem nur eine Nachricht (mit der höchsten Priorität).
+fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String, Priority)> {
     let d = Decoded { kind: t.kind, address: t.address.clone(), sub: t.sub.clone(), message: t.message.clone() };
-    let mut out: Vec<(usize, Vec<&str>)> = Vec::new();
+    let mut out: Vec<(usize, Vec<&str>, Priority)> = Vec::new();
     for a in alarms.iter().filter(|a| a.filter.matches(&d)) {
         for &target in &a.targets {
-            match out.iter_mut().find(|(i, _)| *i == target) {
-                Some((_, names)) => names.push(&a.name),
-                None => out.push((target, vec![&a.name])),
+            match out.iter_mut().find(|(i, _, _)| *i == target) {
+                Some((_, names, priority)) => {
+                    names.push(&a.name);
+                    *priority = (*priority).max(a.priority);
+                }
+                None => out.push((target, vec![&a.name], a.priority)),
             }
         }
     }
-    out.into_iter().map(|(i, names)| (i, names.join(", "))).collect()
+    out.into_iter().map(|(i, names, priority)| (i, names.join(", "), priority)).collect()
 }
 
 fn text(t: &Telegram) -> String {
@@ -151,16 +182,22 @@ fn text(t: &Telegram) -> String {
     format!("{text}\n{} · {}", t.source, t.time.format("%d.%m.%Y %H:%M:%S"))
 }
 
-pub fn send(target: &Target, title: &str, body: &str) -> Result<()> {
+pub fn send(target: &Target, title: &str, body: &str, priority: Priority) -> Result<()> {
     match target {
         Target::Telegram { bot_token, chat_id } => post_form(
             &format!("https://api.telegram.org/bot{bot_token}/sendMessage"),
             &[("chat_id", chat_id), ("text", &format!("{title}\n{body}"))],
         ),
-        Target::Pushover { token, user } => post_form(
-            "https://api.pushover.net/1/messages.json",
-            &[("token", token), ("user", user), ("title", title), ("message", body)],
-        ),
+        Target::Pushover { token, user } => {
+            let mut form = vec![("token", token.as_str()), ("user", user), ("title", title), ("message", body)];
+            match priority {
+                Priority::Normal => {}
+                Priority::High => form.push(("priority", "1")),
+                // Notfall: alle 60 s wiederholen, höchstens eine Stunde lang
+                Priority::Emergency => form.extend([("priority", "2"), ("retry", "60"), ("expire", "3600")]),
+            }
+            post_form("https://api.pushover.net/1/messages.json", &form)
+        }
         Target::Email { server, port, security, username, password, from, to } => {
             use lettre::Transport;
             let mut email = lettre::Message::builder().from(from.parse().context("from")?).subject(title);
@@ -229,17 +266,42 @@ mod tests {
             name = "Brand"
             message = "(?i)brand"
             notify = ["Handy"]
+            priority = "high"
             "#,
         )
         .unwrap();
         let alarms: Vec<Alarm> = c.alarm.iter().map(|a| compile(a, &c.notifier).unwrap()).collect();
         let got = |t| targets(&alarms, &t);
-        assert_eq!(got(telegram(Kind::Pocsag, "1859992", "Brand 3")), [(0, "Schleife, Brand".into()), (1, "Schleife".into())]);
-        assert_eq!(got(telegram(Kind::Pocsag, "1234567", "BRAND")), [(0, "Brand".into())]);
+        assert_eq!(
+            got(telegram(Kind::Pocsag, "1859992", "Brand 3")),
+            [(0, "Schleife, Brand".into(), Priority::High), (1, "Schleife".into(), Priority::Normal)]
+        );
+        assert_eq!(got(telegram(Kind::Pocsag, "1234567", "BRAND")), [(0, "Brand".into(), Priority::High)]);
         assert!(got(telegram(Kind::Fms, "1859992", "")).is_empty());
 
-        let unknown = AlarmConfig { name: "X".into(), kind: None, address: None, sub: None, message: None, notify: vec!["Fax".into()] };
+        let unknown = AlarmConfig {
+            name: "X".into(),
+            kind: None,
+            address: None,
+            sub: None,
+            message: None,
+            notify: vec!["Fax".into()],
+            priority: Priority::Normal,
+        };
         assert!(compile(&unknown, &c.notifier).is_err());
+    }
+
+    #[test]
+    fn repeats_are_suppressed_within_window() {
+        let mut n = Notify::new(&[], Vec::new(), Duration::from_secs(60)).unwrap();
+        let start = Instant::now();
+        let alarm = telegram(Kind::Pocsag, "1859992", "Brand 3");
+        assert!(!n.is_repeat(&alarm, start));
+        assert!(n.is_repeat(&alarm, start + Duration::from_secs(30)));
+        assert!(!n.is_repeat(&telegram(Kind::Pocsag, "1859992", "Brand 4"), start + Duration::from_secs(31)));
+        // Das Fenster zählt ab der letzten Wiederholung
+        assert!(n.is_repeat(&alarm, start + Duration::from_secs(80)));
+        assert!(!n.is_repeat(&alarm, start + Duration::from_secs(141)));
     }
 
     #[test]

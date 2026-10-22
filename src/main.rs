@@ -64,7 +64,7 @@ fn test_notify(config: &str) -> Result<()> {
         anyhow::bail!("Keine [[notifier]] konfiguriert");
     }
     for n in &config.notifiers {
-        match notify::send(&n.target, "BosLook Test", "Testnachricht von BosLook") {
+        match notify::send(&n.target, "BosLook Test", "Testnachricht von BosLook", notify::Priority::Normal) {
             Ok(()) => println!("{}: gesendet", n.name),
             Err(e) => println!("{}: Fehler: {e:#}", n.name),
         }

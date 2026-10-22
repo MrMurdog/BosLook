@@ -14,6 +14,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub async fn run(config_path: &str) -> Result<()> {
@@ -39,7 +40,7 @@ pub async fn run(config_path: &str) -> Result<()> {
     }
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let filters = Arc::new(Filters::new(&config.filters)?);
-    let notify = Notify::new(&config.alarms, config.notifiers)?;
+    let mut notify = Notify::new(&config.alarms, config.notifiers, Duration::from_secs(config.notify_repeat))?;
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);

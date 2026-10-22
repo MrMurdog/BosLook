@@ -3,6 +3,10 @@
 # SQLite-Datenbank für empfangene Telegramme
 database = "boslook.db"
 
+# Gleiche Telegramme (Alarme werden oft wiederholt) innerhalb dieser Sekunden nur einmal
+# benachrichtigen, 0 = jedes Mal
+# notify_repeat = 60
+
 [web]
 listen = "0.0.0.0:8443"
 # "off" = HTTP, "self-signed" = Zertifikat wird beim ersten Start erstellt,
@@ -82,9 +86,12 @@ password = "ERSETZEN"
 from = "BosLook <boslook@example.org>"
 to = ["ich@example.org"]
 
-# Alarmregeln: Felder wie bei den Filtern, notify = Namen der Ziele
+# Alarmregeln: Felder wie bei den Filtern, notify = Namen der Ziele.
+# priority (nur Pushover): "normal" (Standard), "high" (Ton auch bei „Nicht stören")
+# oder "emergency" (wird wiederholt, bis die Nachricht bestätigt ist)
 [[alarm]]
 name = "Eigene Schleife"
 kind = "pocsag"
 address = "^18599"
 notify = ["Handy", "Leitstelle"]
+priority = "high"

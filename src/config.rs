@@ -25,6 +25,9 @@ pub struct Config {
     pub notifiers: Vec<NotifierConfig>,
     #[serde(default, rename = "alarm")]
     pub alarms: Vec<AlarmConfig>,
+    /// Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen (0 = aus)
+    #[serde(default = "default_notify_repeat")]
+    pub notify_repeat: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +107,10 @@ pub enum Source {
 
 fn default_database() -> String {
     "boslook.db".into()
+}
+
+fn default_notify_repeat() -> u64 {
+    60
 }
 
 fn default_cert() -> String {
