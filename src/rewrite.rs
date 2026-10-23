@@ -18,6 +18,8 @@ const MAX_RIC: i64 = 2_097_151;
 pub struct RewriteConfig {
     pub name: String,
     pub kind: Option<Kind>,
+    /// Name des Eingangs (Reiter)
+    pub source: Option<String>,
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,
@@ -59,6 +61,7 @@ impl Rewrites {
             let filter = Filter::new(&FilterConfig {
                 name: c.name.clone(),
                 kind: c.kind,
+                source: c.source.clone(),
                 address: c.address.clone(),
                 sub: c.sub.clone(),
                 message: c.message.clone(),

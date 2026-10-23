@@ -20,6 +20,7 @@ impl Events {
                 let filter = Filter::new(&FilterConfig {
                     name: e.name.clone(),
                     kind: e.kind,
+                    source: e.source.clone(),
                     address: e.address.clone(),
                     sub: e.sub.clone(),
                     message: e.message.clone(),

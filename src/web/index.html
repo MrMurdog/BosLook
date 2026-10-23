@@ -69,17 +69,20 @@
   #cfg-form .row { display: grid; grid-template-columns: 14rem minmax(0, 32rem); gap: 4px 12px; align-items: start; margin: 6px 0; }
   #cfg-form .row > span:first-child { padding-top: 7px; }
   #cfg-form .row small { grid-column: 2; color: var(--muted); font-size: 12px; }
+  /* Einträge einer Gruppe (z. B. Kanäle eines Plugins) */
+  #cfg-form .row .item { border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px 8px; margin-bottom: 8px; }
+  #cfg-form .row .row { grid-template-columns: 9rem minmax(0, 1fr); }
   #cfg-form input:not([type=checkbox]), #cfg-form select, #cfg-form textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   #cfg-form textarea { height: auto; resize: vertical; }
   #cfg-form .pair { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin-bottom: 6px; }
   #cfg-form .pair input { font-family: ui-monospace, monospace; }
   #cfg-form .test { display: grid; grid-template-columns: 7rem 1fr 4rem; gap: 6px; }
-  #cfg-form .test .message { grid-column: 1 / -1; }
+  #cfg-form .test .message, #cfg-form .test .source { grid-column: 1 / -1; }
   #cfg-form .test-result { grid-column: 2; white-space: pre-wrap; font-size: 13px; }
   #cfg-form .test-result.err { color: var(--danger); }
   #cfg-form .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-top: 6px; }
   #cfg-form .req { color: var(--danger); }
-  @media (max-width: 640px) { #cfg-form .row { grid-template-columns: 1fr; } #cfg-form .row small { grid-column: 1; } #cfg-form .row > span:first-child { padding-top: 0; } }
+  @media (max-width: 640px) { #cfg-form .row, #cfg-form .row .row { grid-template-columns: 1fr; } #cfg-form .row small { grid-column: 1; } #cfg-form .row > span:first-child { padding-top: 0; } }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -434,9 +437,9 @@ function el(tag, cls, text) {
 }
 
 // Neuer Eintrag mit Standardwerten; Auswahlfelder ohne Standard nehmen den ersten Wert
-function newItem(section) {
+function newItem(list) {
   const item = {};
-  for (const f of section.fields) {
+  for (const f of list) {
     if (f.default !== null) item[f.key] = structuredClone(f.default);
     else if (f.required && f.input.type === "select") item[f.key] = f.input.options[0];
   }
@@ -456,10 +459,10 @@ function section(s) {
   box.append(el("legend", "", s.title));
   if (s.help) box.append(el("p", "help", s.help));
   if (s.kind === "root") box.append(...fields(s.fields, v));
-  else if (s.kind === "table") box.append(...fields(s.fields, v[s.key] ??= newItem(s)));
+  else if (s.kind === "table") box.append(...fields(s.fields, v[s.key] ??= newItem(s.fields)));
   else if (s.kind === "optional") {
     const on = el("input"); on.type = "checkbox"; on.checked = v[s.key] != null;
-    on.onchange = () => { v[s.key] = on.checked ? newItem(s) : null; renderForm(); };
+    on.onchange = () => { v[s.key] = on.checked ? newItem(s.fields) : null; renderForm(); };
     const label = el("label", "checks"); label.append(on, "aktiv");
     box.append(label);
     if (v[s.key] != null) box.append(...fields(s.fields, v[s.key]));
@@ -473,7 +476,7 @@ function section(s) {
       box.append(div);
     });
     const add = el("button", "", "+ Hinzufügen"); add.type = "button";
-    add.onclick = () => { list.push(newItem(s)); renderForm(); };
+    add.onclick = () => { list.push(newItem(s.fields)); renderForm(); };
     box.append(add);
     if (s.key === "rewrite") box.append(rewriteTest(s));
   }
@@ -481,13 +484,14 @@ function section(s) {
 }
 
 // Testfeld unter den Bearbeitungsregeln; die Regeln kommen ungespeichert aus dem Formular
-const testValues = { kind: "pocsag", address: "", sub: "a", message: "" };
+const testValues = { kind: "pocsag", source: "", address: "", sub: "a", message: "" };
 function rewriteTest(s) {
   const row = el("div", "row");
   const controls = el("div", "test");
   const result = el("small", "test-result");
   const kind = el("select");
   for (const k of s.fields.find((f) => f.key === "kind").input.options) kind.append(new Option(k.toUpperCase(), k, false, k === testValues.kind));
+  const source = el("input", "source"); source.placeholder = "Kanal"; source.value = testValues.source;
   const address = el("input"); address.placeholder = "Adresse"; address.value = testValues.address;
   const sub = el("select");
   for (const x of ["a", "b", "c", "d"]) sub.append(new Option(x, x, false, x === testValues.sub));
@@ -495,7 +499,7 @@ function rewriteTest(s) {
   const button = el("button", "", "Testen"); button.type = "button";
   let timer = null;
   const run = async () => {
-    Object.assign(testValues, { kind: kind.value, address: address.value, sub: sub.value, message: message.value });
+    Object.assign(testValues, { kind: kind.value, source: source.value, address: address.value, sub: sub.value, message: message.value });
     if (!address.value.trim()) return (result.textContent = "");
     const res = await fetch("/api/rewrite/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: cfg.values.rewrite ?? [], ...testValues }) });
     if (!res.ok) { result.className = "test-result err"; result.textContent = await res.text(); return; }
@@ -505,9 +509,9 @@ function rewriteTest(s) {
     result.textContent = `→ ${t.address}${t.sub}: ${t.message}` + (described ? `\n${described}` : "") + `\n${applied ? "Regeln: " + applied : "Keine Regel passt"}`;
   };
   for (const e of [kind, sub]) e.onchange = run;
-  for (const e of [address, message]) e.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 300); };
+  for (const e of [source, address, message]) e.oninput = () => { clearTimeout(timer); timer = setTimeout(run, 300); };
   button.onclick = run;
-  controls.append(kind, address, sub, message, button);
+  controls.append(source, kind, address, sub, message, button);
   row.append(el("span", "", "Telegramm testen"), controls, result);
   if (testValues.address) run();
   return row;
@@ -516,7 +520,7 @@ function rewriteTest(s) {
 function fields(list, obj) {
   return list.filter((f) => !f.when || f.when[1].includes(obj[f.when[0]])).map((f) => {
     // Mehrfachauswahl nicht in ein <label>, sonst schaltet ein Klick auf den Namen das erste Kästchen
-    const row = el(["choices", "names", "pairs"].includes(f.input.type) ? "div" : "label", "row");
+    const row = el(["choices", "names", "pairs", "group"].includes(f.input.type) ? "div" : "label", "row");
     const name = el("span", "", f.label);
     if (f.required) name.append(el("span", "req", " *"));
     row.append(name, input(f, obj));
@@ -580,6 +584,21 @@ function input(f, obj) {
       wrap.append(add);
     };
     draw();
+    return wrap;
+  }
+  if (type === "group") {
+    const list = obj[f.key] ??= [];
+    const wrap = el("div");
+    list.forEach((item, i) => {
+      const div = el("div", "item");
+      const remove = el("button", "", "Entfernen"); remove.type = "button";
+      remove.onclick = () => { list.splice(i, 1); renderForm(); };
+      div.append(...fields(f.input.options, item), remove);
+      wrap.append(div);
+    });
+    const add = el("button", "", "+ Hinzufügen"); add.type = "button";
+    add.onclick = () => { list.push(newItem(f.input.options)); renderForm(); };
+    wrap.append(add);
     return wrap;
   }
   if (type === "lines" || type === "multiline") {

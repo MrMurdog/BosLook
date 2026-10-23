@@ -73,8 +73,8 @@ pocsag = "auto"
 
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
 # Gibt es Filter ohne "exclude", muss mindestens einer passen.
-# Felder: kind (pocsag/fms/zvei/wetter), address, sub, message und aus den Beschreibungen
-# ort, kurz, lang
+# Felder: kind (pocsag/fms/zvei/wetter), source (Kanal = Name des Eingangs), address, sub,
+# message und aus den Beschreibungen ort, kurz, lang
 [[filter]]
 name = "Eigene Schleifen"
 kind = "pocsag"

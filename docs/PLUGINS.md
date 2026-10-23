@@ -94,6 +94,31 @@ Für `[[field]]` und `[[notifier_field]]`:
 | `select`    | Text aus `options`    | Auswahlliste                   |
 | `lines`     | Liste von Texten      | mehrzeilig, ein Eintrag je Zeile |
 | `multiline` | Text mit Zeilenumbrüchen | mehrzeilig                  |
+| `group`     | Liste von Objekten    | Einträge mit eigenen Feldern, „+ Hinzufügen“ |
+
+Bei `group` stehen die Felder eines Eintrags als `[[field.field]]` darunter (alle Eingaben
+außer `group`). In der Konfiguration wird daraus `[[plugin.<name>.<key>]]`, z. B. Kanäle:
+
+```toml
+[[field]]
+key = "kanal"
+label = "Kanäle"
+input = "group"
+[[field.field]]
+key = "name"
+label = "Name"
+required = true
+[[field.field]]
+key = "rics"
+label = "RICs"
+input = "lines"
+```
+
+```toml
+[[plugin.beispiel.kanal]]
+name = "SDR"
+rics = ["1864080"]
+```
 
 Felder, die nicht ausgefüllt sind und keinen `default` haben, fehlen im JSON.
 

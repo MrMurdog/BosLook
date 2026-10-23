@@ -13,6 +13,8 @@ use serde::Deserialize;
 pub struct FilterConfig {
     pub name: String,
     pub kind: Option<Kind>,
+    /// Name des Eingangs (Reiter)
+    pub source: Option<String>,
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,
@@ -25,6 +27,7 @@ pub struct FilterConfig {
 
 pub struct Filter {
     kind: Option<Kind>,
+    source: Option<Regex>,
     address: Option<Regex>,
     sub: Option<Regex>,
     message: Option<Regex>,
@@ -45,6 +48,7 @@ impl Filter {
         };
         Ok(Filter {
             kind: c.kind,
+            source: re(&c.source)?,
             address: re(&c.address)?,
             sub: re(&c.sub)?,
             message: re(&c.message)?,
@@ -58,6 +62,7 @@ impl Filter {
     pub fn matches(&self, d: &Telegram) -> bool {
         let field = |re: &Option<Regex>, value: &str| re.as_ref().is_none_or(|re| re.is_match(value));
         self.kind.is_none_or(|k| k == d.kind)
+            && field(&self.source, &d.source)
             && field(&self.address, &d.address)
             && field(&self.sub, &d.sub)
             && field(&self.message, &d.message)
@@ -137,6 +142,15 @@ mod tests {
         let mut t = pocsag("1234567", "");
         assert!(!f.allows(&t));
         t.ort = "Musterstadt".into();
+        assert!(f.allows(&t));
+    }
+
+    #[test]
+    fn source_field() {
+        let f = filters("[[filter]]\nname = 'Nur SDR'\nsource = '^SDR$'");
+        let mut t = pocsag("1234567", "");
+        assert!(!f.allows(&t));
+        t.source = "SDR".into();
         assert!(f.allows(&t));
     }
 

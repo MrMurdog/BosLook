@@ -70,6 +70,9 @@ pub enum Input {
     /// Liste von Einträgen mit den Textfeldern (Schlüssel, Beschriftung), in der Datei als
     /// `[[abschnitt.feld]]`; Einträge mit leerem ersten Feld fallen weg
     Pairs(Vec<(&'static str, &'static str)>),
+    /// Liste von Einträgen mit eigenen Feldern, in der Datei als `[[abschnitt.feld]]`
+    /// (z. B. die Kanäle eines Plugins)
+    Group(Vec<Field>),
 }
 
 pub fn field(key: &'static str, label: &'static str, input: Input) -> Field {
@@ -109,6 +112,7 @@ const PRIORITIES: [&str; 3] = ["normal", "high", "emergency"];
 pub fn match_fields() -> Vec<Field> {
     vec![
         field("kind", "Art", Input::Select(KINDS.to_vec())),
+        field("source", "Kanal", Input::Text).help("Regulärer Ausdruck auf den Namen des Eingangs (Reiter), z. B. ^SDR$"),
         field("address", "Adresse", Input::Text).help("Regulärer Ausdruck, z. B. ^18599"),
         field("sub", "Sub", Input::Text).help("Regulärer Ausdruck"),
         field("message", "Meldung", Input::Text).help("Regulärer Ausdruck"),
@@ -318,13 +322,7 @@ fn split_key(key: &str) -> (Option<&str>, &str) {
 pub fn to_json(text: &str, schema: &[Section]) -> Result<Value> {
     let mut values: Value = toml::from_str(text)?;
     for s in schema {
-        let defaults = |item: &mut Value| {
-            for f in &s.fields {
-                if let (Some(d), Some(obj)) = (&f.default, item.as_object_mut()) {
-                    obj.entry(f.key).or_insert_with(|| d.clone());
-                }
-            }
-        };
+        let defaults = |item: &mut Value| defaults(&s.fields, item);
         match s.kind {
             SectionKind::Root => defaults(&mut values),
             SectionKind::Table | SectionKind::Optional => {
@@ -347,6 +345,19 @@ pub fn to_json(text: &str, schema: &[Section]) -> Result<Value> {
         }
     }
     Ok(values)
+}
+
+fn defaults(fields: &[Field], item: &mut Value) {
+    for f in fields {
+        if let (Some(d), Some(obj)) = (&f.default, item.as_object_mut()) {
+            obj.entry(f.key).or_insert_with(|| d.clone());
+        }
+        if let Input::Group(group) = &f.input {
+            for entry in item.get_mut(f.key).and_then(Value::as_array_mut).into_iter().flatten() {
+                defaults(group, entry);
+            }
+        }
+    }
 }
 
 /// Schreibt die Formularwerte in den Text der Datei.
@@ -434,8 +445,13 @@ fn fill(table: &mut Table, fields: &[Field], item: &Value, context: &str) -> Res
             None if f.default.as_ref() == Some(&new) => continue,
             _ => {}
         }
-        if let Input::Pairs(_) = f.input {
-            let tables = new.as_array().into_iter().flatten().map(json_to_table).collect::<Result<_>>()?;
+        if let Input::Pairs(_) | Input::Group(_) = &f.input {
+            let keys: Vec<&str> = match &f.input {
+                Input::Pairs(pairs) => pairs.iter().map(|(k, _)| *k).collect(),
+                Input::Group(group) => group.iter().map(|g| g.key).collect(),
+                _ => unreachable!(),
+            };
+            let tables = new.as_array().into_iter().flatten().map(|item| json_to_table(item, &keys)).collect::<Result<_>>()?;
             table.insert(f.key, Item::ArrayOfTables(tables));
             continue;
         }
@@ -484,6 +500,29 @@ fn convert(f: &Field, value: Option<&Value>, old: Option<&Value>, context: &str)
                 .collect();
             (!items.is_empty()).then(|| items.into())
         }
+        (Input::Group(fields), Value::Array(a)) => {
+            let mut items = Vec::new();
+            for (n, item) in a.iter().enumerate() {
+                let context = match item.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+                    Some(name) => format!("{context}, {} '{name}'", f.label),
+                    None => format!("{context}, {} Nr. {}", f.label, n + 1),
+                };
+                let mut entry = serde_json::Map::new();
+                for g in fields.iter().filter(|g| g.active(item)) {
+                    match convert(g, item.get(g.key), None, &context)? {
+                        // Standardwerte wie bei den übrigen Feldern nicht in die Datei schreiben
+                        Some(v) if g.default.as_ref() == Some(&v) => {}
+                        Some(v) => {
+                            entry.insert(g.key.into(), v);
+                        }
+                        None if g.required => bail!("{context}: „{}“ ist leer", g.label),
+                        None => {}
+                    }
+                }
+                items.push(Value::Object(entry));
+            }
+            (!items.is_empty()).then(|| items.into())
+        }
         (Input::Text | Input::Multiline | Input::Password | Input::Secret | Input::Select(_) | Input::Device, Value::String(s)) => text(s),
         _ => bail!("{context}: ungültiger Wert für {}", f.label),
     })
@@ -503,11 +542,14 @@ fn item_to_json(item: &Item) -> Option<Value> {
     }
 }
 
-/// Eintrag für `[[abschnitt.feld]]`; ohne eigene Position landet er direkt unter seinem Abschnitt
-fn json_to_table(item: &Value) -> Result<Table> {
+/// Eintrag für `[[abschnitt.feld]]` mit den Schlüsseln in der Reihenfolge des Schemas; ohne
+/// eigene Position landet er direkt unter seinem Abschnitt
+fn json_to_table(item: &Value, keys: &[&str]) -> Result<Table> {
     let mut table = Table::new();
-    for (k, v) in item.as_object().into_iter().flatten() {
-        table.insert(k, Item::Value(json_to_toml(v)?));
+    for k in keys {
+        if let Some(v) = item.get(*k) {
+            table.insert(k, Item::Value(json_to_toml(v)?));
+        }
     }
     Ok(table)
 }

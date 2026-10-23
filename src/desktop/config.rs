@@ -31,6 +31,8 @@ pub struct ServerConfig {
 pub struct EventConfig {
     pub name: String,
     pub kind: Option<Kind>,
+    /// Name des Eingangs (Reiter)
+    pub source: Option<String>,
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,

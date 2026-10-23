@@ -36,11 +36,13 @@ capabilities = ["observe", "process", "notify", "input", "web"]   # nur die benu
 [[field]]                 # 0..n, Einstellungen unter [plugin.<name>], kommen in init.config
 key = "<key>"
 label = "<Beschriftung>"
-input = "text"            # text | password | number | bool | select | lines | multiline
+input = "text"            # text | password | number | bool | select | lines | multiline | group
 options = []              # nur bei select
 required = false
 default = "<wert>"        # optional
 help = "<Hilfetext>"
+# bei input = "group": Felder je Eintrag als [[field.field]] (ohne group), Wert in init.config
+# ist eine Liste von Objekten, in der Konfiguration [[plugin.<name>.<key>]]
 
 [[notifier_field]]        # 0..n, nur mit notify: Einstellungen je Ziel, kommen in notify.target
 key = "url"

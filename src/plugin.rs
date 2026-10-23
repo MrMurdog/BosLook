@@ -86,7 +86,7 @@ pub struct FieldDef {
     pub label: String,
     #[serde(default)]
     pub help: String,
-    /// text, password, number, bool, select, lines, multiline
+    /// text, password, number, bool, select, lines, multiline, group
     #[serde(default = "default_input")]
     pub input: String,
     /// Auswahlwerte bei `select`
@@ -95,6 +95,9 @@ pub struct FieldDef {
     #[serde(default)]
     pub required: bool,
     pub default: Option<toml::Value>,
+    /// Felder eines Eintrags bei `group`, in `plugin.toml` als `[[field.field]]`
+    #[serde(default)]
+    pub field: Vec<FieldDef>,
 }
 
 fn default_input() -> String {
@@ -111,6 +114,8 @@ impl FieldDef {
             "select" => Input::Select(self.options.iter().map(|o| intern(o)).collect()),
             "lines" => Input::Lines,
             "multiline" => Input::Multiline,
+            "group" if self.field.iter().any(|f| f.input == "group") => bail!("Feld '{}': keine Gruppe in einer Gruppe", self.key),
+            "group" => Input::Group(self.field.iter().map(FieldDef::to_field).collect::<Result<_>>()?),
             other => bail!("Feld '{}': unbekannte Eingabe '{other}'", self.key),
         };
         let mut f = field(intern(&self.key), intern(&self.label), input).help(intern(&self.help));
@@ -600,6 +605,50 @@ mod tests {
         assert!(errors[1].contains("falsch") && errors[1].contains("muss wie der Ordner heißen"), "{errors:?}");
         assert!(errors[2].contains("unbekannte Eingabe 'farbe'"), "{errors:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_fields_are_saved_as_nested_tables() {
+        let m: Manifest = toml::from_str(
+            r#"
+            name = "krypt"
+            version = "1.0.0"
+            api = 1
+            command = ["x"]
+            [[field]]
+            key = "kanal"
+            label = "Kanal"
+            input = "group"
+            [[field.field]]
+            key = "name"
+            label = "Name"
+            required = true
+            [[field.field]]
+            key = "rics"
+            label = "RICs"
+            input = "lines"
+            [[field.field]]
+            key = "zeit"
+            label = "Zeit"
+            input = "number"
+            default = 30
+            "#,
+        )
+        .unwrap();
+        let schema: Vec<_> = crate::form::server_schema(std::slice::from_ref(&m)).into_iter().filter(|s| s.key == "plugin.krypt").collect();
+        let text = "[plugin.krypt]\n";
+        let mut form = crate::form::to_json(text, &schema).unwrap();
+        form["plugin.krypt"]["kanal"] = json!([{"rics": "1864080\n1859991b", "name": "SDR", "zeit": "30"}, {"zeit": "0", "name": "Karte"}]);
+        let saved = crate::form::apply(text, &schema, &form).unwrap();
+        assert_eq!(saved, "[plugin.krypt]\n\n[[plugin.krypt.kanal]]\nname = \"SDR\"\nrics = [\"1864080\", \"1859991b\"]\n\n[[plugin.krypt.kanal]]\nname = \"Karte\"\nzeit = 0\n");
+        // Standardwerte erscheinen im Formular, unverändert gespeichert bleibt der Text gleich
+        let form = crate::form::to_json(&saved, &schema).unwrap();
+        assert_eq!(form["plugin.krypt"]["kanal"][0]["zeit"], 30);
+        assert_eq!(crate::form::apply(&saved, &schema, &form).unwrap(), saved);
+        let mut form = form;
+        form["plugin.krypt"]["kanal"][1]["name"] = "".into();
+        let err = crate::form::apply(&saved, &schema, &form).unwrap_err().to_string();
+        assert_eq!(err, "Plugin: krypt, Kanal Nr. 2: „Name“ ist leer");
     }
 
     fn config(text: &str) -> Config {

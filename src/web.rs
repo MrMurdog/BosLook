@@ -399,6 +399,8 @@ struct RewriteTest {
     sub: String,
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    source: String,
 }
 
 /// Testfeld im Formular: Was machen die Bearbeitungsregeln aus diesem Telegramm?
@@ -413,7 +415,8 @@ async fn test_rewrite(State(app): State<Arc<App>>, headers: HeaderMap, Json(test
             address = format!("{ric:07}");
         }
         let decoded = Decoded { kind: test.kind, address, sub: test.sub, message: test.message };
-        let mut t = Telegram::new(decoded, "Test", chrono::Local::now());
+        let source = Some(test.source.trim()).filter(|s| !s.is_empty()).unwrap_or("Test");
+        let mut t = Telegram::new(decoded, source, chrono::Local::now());
         let applied = rules.describe_and_apply(&app.db.lock().unwrap(), &mut t)?.join(", ");
         anyhow::Ok(serde_json::json!({ "telegram": t, "applied": applied }))
     })

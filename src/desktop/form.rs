@@ -17,6 +17,7 @@ pub struct Form {
 
 pub struct RewriteTest {
     kind: String,
+    source: String,
     address: String,
     sub: String,
     message: String,
@@ -27,7 +28,7 @@ pub struct RewriteTest {
 
 impl Default for RewriteTest {
     fn default() -> RewriteTest {
-        RewriteTest { kind: "pocsag".into(), address: String::new(), sub: "a".into(), message: String::new(), request: None, result: None }
+        RewriteTest { kind: "pocsag".into(), source: String::new(), address: String::new(), sub: "a".into(), message: String::new(), request: None, result: None }
     }
 }
 
@@ -52,6 +53,7 @@ impl RewriteTest {
         let mut run = false;
         ui.horizontal_wrapped(|ui| {
             ui.label("Telegramm testen");
+            run |= ui.add(egui::TextEdit::singleline(&mut self.source).hint_text("Kanal").desired_width(90.0)).changed();
             egui::ComboBox::from_id_salt("test-kind").selected_text(self.kind.to_uppercase()).show_ui(ui, |ui| {
                 for k in kinds.as_array().into_iter().flatten().map(str) {
                     run |= ui.selectable_value(&mut self.kind, k.to_string(), k.to_uppercase()).clicked();
@@ -76,7 +78,7 @@ impl RewriteTest {
             None => {}
         }
         if run && !self.address.trim().is_empty() {
-            self.request = Some(json!({ "rules": rules, "kind": self.kind, "address": self.address, "sub": self.sub, "message": self.message }));
+            self.request = Some(json!({ "rules": rules, "kind": self.kind, "source": self.source, "address": self.address, "sub": self.sub, "message": self.message }));
         }
     }
 }
@@ -289,6 +291,30 @@ impl Ctx<'_> {
                     value.as_array_mut().expect("Liste").push(json!({}));
                 }
             }
+            "group" => {
+                // Wie bei „pairs“ erst beim Hinzufügen eine Liste anlegen
+                let fields = &f["input"]["options"];
+                let mut remove = None;
+                for (i, item) in value.as_array_mut().into_iter().flatten().enumerate() {
+                    ui.push_id(i, |ui| {
+                        ui.group(|ui| {
+                            self.fields(ui, key, fields, item);
+                            if ui.button("Entfernen").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let (Some(i), Some(list)) = (remove, value.as_array_mut()) {
+                    list.remove(i);
+                }
+                if ui.button("+ Hinzufügen").clicked() {
+                    if !value.is_array() {
+                        *value = json!([]);
+                    }
+                    value.as_array_mut().expect("Liste").push(new_item(fields));
+                }
+            }
             "lines" | "multiline" => {
                 let mut text = match &*value {
                     Value::Array(a) => a.iter().map(str).collect::<Vec<_>>().join("\n"),
@@ -325,6 +351,11 @@ fn complete(fields: &Value, item: &mut Value) {
     for f in fields.as_array().into_iter().flatten() {
         if let Some(obj) = item.as_object_mut() {
             obj.entry(str(&f["key"])).or_insert(Value::Null);
+        }
+        if f["input"]["type"] == "group" {
+            for entry in item.get_mut(str(&f["key"])).and_then(Value::as_array_mut).into_iter().flatten() {
+                complete(&f["input"]["options"], entry);
+            }
         }
     }
 }

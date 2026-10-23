@@ -82,7 +82,9 @@ Die Polarität des POCSAG-Signals wird automatisch erkannt.
 ### Filter
 
 Filter arbeiten mit regulären Ausdrücken auf `address`, `sub` und `message`, optional
-eingeschränkt auf `kind`. Ein Telegramm wird verworfen, wenn ein Filter mit
+eingeschränkt auf `kind` und mit `source` auf den Kanal (Name des Eingangs bzw. Reiter, z. B.
+`source = "^SDR$"`). Das Feld `source` gibt es genauso bei Bearbeitungsregeln, Alarmen und
+den Ereignissen der Desktop-App. Ein Telegramm wird verworfen, wenn ein Filter mit
 `exclude = true` passt. Gibt es Filter ohne `exclude`, muss mindestens einer davon passen.
 Beispiele stehen in `boslook.example.toml`.
 

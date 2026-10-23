@@ -90,6 +90,8 @@ pub enum Priority {
 pub struct AlarmConfig {
     pub name: String,
     pub kind: Option<Kind>,
+    /// Name des Eingangs (Reiter)
+    pub source: Option<String>,
     pub address: Option<String>,
     pub sub: Option<String>,
     pub message: Option<String>,
@@ -207,6 +209,7 @@ fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
     let filter = Filter::new(&FilterConfig {
         name: a.name.clone(),
         kind: a.kind,
+        source: a.source.clone(),
         address: a.address.clone(),
         sub: a.sub.clone(),
         message: a.message.clone(),
