@@ -1,0 +1,22 @@
+# BosLook – Client auf dem Raspberry Pi „bwpimitte“
+# Empfang per rtl_fm über stdin, Weiterleitung an einen BosLook-Server.
+# Ohne [web] läuft keine Weboberfläche; die Telegramme werden trotzdem lokal gespeichert.
+#
+# Start: rtl_fm -f <FREQUENZ> -M fm -s 22050 - | ./boslook serve
+
+database = "boslook.db"
+
+[forward]
+# Adresse der Weboberfläche des Servers
+server = "https://SERVER:8443"
+# Name und Token wie beim Server unter [[client]] eingetragen
+name = "bwpimitte"
+token = "PLATZHALTER"
+# Nur bei tls = "self-signed" auf dem Server: dessen Zertifikatsdatei hierher kopieren
+# cert = "server-cert.pem"
+
+[[input]]
+name = "SDR"
+type = "stdin"
+sample_rate = 22050
+decoders = ["pocsag512", "pocsag1200"]

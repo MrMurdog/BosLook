@@ -1,0 +1,22 @@
+# BosLook – User-Unit für den Raspberry Pi „bwpimitte“
+# Installation: ~/.config/systemd/user/boslook.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now boslook
+# Damit die Unit ohne angemeldeten Benutzer läuft (auch nach einem Neustart):
+#   sudo loginctl enable-linger jan
+#
+# Der Stick darf nicht gleichzeitig von BOSWatch belegt sein (boswatch-client.service).
+# rtl_fm-Parameter wie bisher bei BOSWatch (/opt/BW3C/client.yaml).
+
+[Unit]
+Description=BosLook Client (rtl_fm → boslook)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/jan/boslook
+ExecStart=/bin/sh -c '/usr/local/bin/rtl_fm -d 0 -f 169.83M -p 0 -l 0 -g 40 -M fm -E DC -s 22050 - | /home/jan/boslook/boslook serve'
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
