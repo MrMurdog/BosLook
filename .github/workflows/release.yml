@@ -1,6 +1,11 @@
 # Baut BosLook für alle Plattformen und veröffentlicht ein Release auf GitHub.
 # Wird nur von Hand gestartet: Actions → Release → Run workflow.
 #
+# Ablauf: prüfen, testen und einen Entwurf des Releases anlegen → jede Plattform baut und hängt
+# ihre Dateien direkt an den Entwurf (keine Artefakte, die zählen gegen das Speicherlimit von
+# Actions) → Prüfsummen zusammenfassen und veröffentlichen (siehe release.sh). Bricht ein Lauf
+# ab, bleibt nur ein Entwurf, den der nächste Lauf mit derselben Version entfernt.
+#
 # Gebaut wird in einem Debian-Bookworm-Container (glibc 2.36): Die Programme laufen auf
 # Debian 12, Raspberry Pi OS Bookworm, Ubuntu 24.04 und neuer. Ein eigener Runner muss Linux
 # mit Docker sein (Container-Jobs).
@@ -34,6 +39,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   DEBIAN_FRONTEND: noninteractive
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   check:
@@ -42,12 +48,12 @@ jobs:
     container: debian:bookworm
     outputs:
       sha: ${{ steps.info.outputs.sha }}
-      prerelease: ${{ steps.info.outputs.prerelease }}
+      release: ${{ steps.draft.outputs.id }}
     steps:
       - name: Pakete
         run: |
           apt-get update -qq
-          apt-get install -y -qq git curl ca-certificates build-essential pkg-config libasound2-dev
+          apt-get install -y -qq git curl ca-certificates jq build-essential pkg-config libasound2-dev
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.branch }}
@@ -82,6 +88,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tests
         run: cargo test --locked
+      - name: Entwurf des Releases
+        id: draft
+        run: |
+          # Erst zuweisen, damit ein Fehler den Schritt abbricht (in echo "$(…)" ginge er verloren)
+          id=$(.github/release.sh prepare "${{ inputs.version }}" "${{ steps.info.outputs.sha }}" "${{ steps.info.outputs.prerelease }}")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
   build:
     name: Bauen (${{ matrix.target }})
@@ -110,7 +122,7 @@ jobs:
         run: |
           if [ -n "$ARCH" ]; then dpkg --add-architecture "$ARCH"; fi
           apt-get update -qq
-          apt-get install -y -qq git curl ca-certificates build-essential pkg-config $PACKAGES
+          apt-get install -y -qq git curl ca-certificates jq build-essential pkg-config $PACKAGES
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.check.outputs.sha }}
@@ -125,11 +137,12 @@ jobs:
           key: ${{ matrix.target }}
       - name: Bauen und verpacken
         run: .github/build.sh "${{ matrix.target }}" "${{ inputs.version }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
+      - name: An den Entwurf hängen
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          (cd dist && sha256sum * > "../SHA256SUMS-$TARGET")
+          .github/release.sh upload "${{ needs.check.outputs.release }}" dist/* "SHA256SUMS-$TARGET"
 
   release:
     name: Veröffentlichen
@@ -137,21 +150,12 @@ jobs:
     runs-on: ${{ inputs.runner == 'self-hosted' && 'self-hosted' || 'ubuntu-latest' }}
     container: debian:bookworm
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          merge-multiple: true
-          path: dist
-      - name: Prüfsummen
+      - name: Pakete
         run: |
-          cd dist
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+          apt-get update -qq
+          apt-get install -y -qq git curl ca-certificates jq
+      - uses: actions/checkout@v4
         with:
-          tag_name: v${{ inputs.version }}
-          target_commitish: ${{ needs.check.outputs.sha }}
-          name: BosLook ${{ inputs.version }}
-          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
-          generate_release_notes: true
-          files: dist/*
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Prüfsummen zusammenfassen und veröffentlichen
+        run: .github/release.sh publish "${{ needs.check.outputs.release }}"
