@@ -106,6 +106,10 @@ struct App {
     hidden: Vec<String>,
     /// Reihenfolge der Spalten (Schlüssel aus `COLUMNS`, leer = Standard)
     order: Vec<String>,
+    /// Neuere Version der Desktop-App (sucht einmal am Tag)
+    update: std::sync::Arc<std::sync::Mutex<Option<boslook::update::Release>>>,
+    /// Fortschritt bzw. Fehler beim Einspielen
+    update_msg: std::sync::Arc<std::sync::Mutex<String>>,
     tray: Option<tray_icon::TrayIcon>,
     tray_rx: mpsc::Receiver<TrayAction>,
     quit: bool,
@@ -144,10 +148,23 @@ impl App {
             plugin_pages: Vec::new(),
             hidden,
             order,
+            update: Default::default(),
+            update_msg: Default::default(),
             tray,
             tray_rx,
             quit: false,
         };
+        boslook::update::cleanup();
+        let (update, repaint) = (app.update.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(release) = boslook::update::latest(false) {
+                    *update.lock().unwrap() = release;
+                    repaint.request_repaint();
+                }
+                std::thread::sleep(boslook::update::INTERVAL);
+            }
+        });
         if !std::path::Path::new(&app.config_path).exists() {
             let _ = std::fs::write(&app.config_path, config::TEMPLATE);
         }
@@ -355,6 +372,30 @@ impl App {
         columns
     }
 
+    /// Hinweis auf eine neuere Version, einspielen auf Knopfdruck
+    fn update_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(release) = self.update.lock().unwrap().clone() else { return };
+        let label = RichText::new(format!("Update {} ▾", release.version)).strong();
+        ui.menu_button(label, |ui| {
+            ui.label(format!("BosLook Desktop {} ist verfügbar, installiert ist {}.", release.version, boslook::update::CURRENT));
+            if ui.button("Änderungen ansehen").clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
+            }
+            if ui.button("Jetzt aktualisieren").clicked() {
+                let msg = self.update_msg.clone();
+                *msg.lock().unwrap() = "Lade und prüfe das Update …".into();
+                std::thread::spawn(move || match boslook::update::install(&release, "boslook-desktop") {
+                    Ok(()) => boslook::serve::restart(),
+                    Err(e) => *msg.lock().unwrap() = format!("Update fehlgeschlagen: {e:#}"),
+                });
+            }
+            let msg = self.update_msg.lock().unwrap().clone();
+            if !msg.is_empty() {
+                ui.label(msg);
+            }
+        });
+    }
+
     /// Menü „Ansicht“: Spalten ein-/ausblenden und verschieben
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         let columns = self.ordered();
@@ -480,6 +521,7 @@ impl eframe::App for App {
                 let blue = if ui.visuals().dark_mode { Color32::from_rgb(0x4a, 0x9b, 0xe0) } else { Color32::from_rgb(0x00, 0x57, 0x95) };
                 ui.heading(RichText::new("Look").strong().color(blue));
                 ui.weak(env!("CARGO_PKG_VERSION"));
+                self.update_menu(ui);
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Telegrams, "Telegramme");
                 ui.selectable_value(&mut self.view, View::Desktop, "Einstellungen");

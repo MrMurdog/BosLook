@@ -50,6 +50,7 @@
   <main>
     <p class="help">Clients leiten ihre Telegramme an diesen Server weiter. Angelegt werden sie unter „Einstellungen“ im Abschnitt „Clients“, dort auch die Fernkonfiguration ihrer Eingänge. Hier gibt es den Einrichtungscode: auf dem Client <code>boslook setup &lt;code&gt; --service</code> ausführen.</p>
     <label class="server">Adresse, unter der Clients diesen Server erreichen: <input id="server" spellcheck="false"></label>
+    <p id="update-bar" hidden><button id="update-clients"></button> <span class="help" id="update-msg"></span></p>
     <div id="errors" class="errors"></div>
     <div id="list"></div>
   </main>
@@ -67,6 +68,22 @@ function el(tag, cls, text) {
 }
 
 const time = (t) => new Date(t).toLocaleString("de-DE");
+let serverVersion = null;
+fetch("/api/me").then((r) => r.json()).then((m) => { serverVersion = m.version; load(); });
+
+// Versionen vergleichen wie update.rs: 0.3.0 > 0.3.0-beta.1 > 0.2.9
+function key(v) {
+  const [nums, pre] = v.replace(/^v/, "").split("-", 2);
+  return [...nums.split(".").map(Number), pre === undefined ? 1 : 0, pre ?? ""];
+}
+function newer(a, b) {
+  const x = key(a), y = key(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+// Clients ab 0.3.0 lassen sich vom Server aktualisieren
+const updatable = (c) => c.state.connected && c.state.version && serverVersion && !newer("0.3.0", c.state.version) && newer(serverVersion, c.state.version);
+const outdated = (c) => c.state.version && serverVersion && newer(serverVersion, c.state.version);
 
 function client(c, code) {
   const box = el("div", "client");
@@ -83,6 +100,7 @@ function client(c, code) {
     ? `Fernkonfiguration: ${c.inputs.length ? c.inputs.join(", ") : "keine Eingänge"}`
     : "Eigene Eingänge des Clients (keine Fernkonfiguration)"));
   if (s.connected && !s.version) box.append(el("p", "help", "Ältere Version: kennt weder Fernkonfiguration noch Zustandsmeldungen."));
+  else if (outdated(c)) box.append(el("p", "help", updatable(c) ? `Älter als der Server (${serverVersion}).` : `Älter als der Server (${serverVersion}); vor 0.3.0 nur von Hand zu aktualisieren.`));
   const inputs = Object.entries(s.inputs);
   if (inputs.length) {
     const list = el("ul");
@@ -131,6 +149,14 @@ async function load() {
   // Angezeigte Einrichtungscodes beim Aktualisieren behalten
   const codes = new Map([...document.querySelectorAll(".client")].map((b) => [b.dataset.name, b.querySelector(".code")]));
   $("list").replaceChildren(...list.map((c) => client(c, codes.get(c.name))));
+  const names = list.filter(updatable).map((c) => c.name);
+  $("update-bar").hidden = !names.length;
+  $("update-clients").textContent = `${names.length === 1 ? "Client" : names.length + " Clients"} auf ${serverVersion} aktualisieren`;
+  $("update-clients").onclick = async () => {
+    if (!confirm(`${names.join(", ")} auf ${serverVersion} aktualisieren? Die Clients laden das Update von GitHub und starten neu.`)) return;
+    const res = await fetch("/api/clients/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names }) });
+    $("update-msg").textContent = res.ok ? `Angefordert: ${(await res.json()).names.join(", ")}` : await res.text();
+  };
   if (!list.length) $("list").append(el("p", "help", "Noch keine Clients angelegt."));
 }
 

@@ -33,9 +33,9 @@ password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
 # Clients, die Telegramme an diesen Server weiterleiten. Am einfachsten nur den Namen
 # eintragen und auf der Seite "Clients" einen Einrichtungscode erzeugen (boslook setup <code>).
 # Von Hand: Token frei wählen (lang und zufällig), Hash erzeugen mit: boslook hash-password
+# Ohne token_hash ist der Client noch nicht eingerichtet; das Token kommt mit dem Einrichtungscode.
 [[client]]
 name = "Zuhause"
-token_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
 # Fernkonfiguration: Der Client nimmt diese Eingänge statt seiner eigenen
 # remote = true
 # [[client.input]]
@@ -156,7 +156,7 @@ priority = "high"
 # text = "{ort}: {message} ({time})"
 
 # Plugins: Ordner unter plugins/ neben dieser Datei, Abschnitt = eingeschaltet.
-# Doku: docs/index.md. Ein Plugin mit Benachrichtigungsart ist ein weiterer
+# Doku: docs/plugins.md. Ein Plugin mit Benachrichtigungsart ist ein weiterer
 # Dienst unter [[notifier]], z. B. type = "webhook".
 # [plugin.webhook]
 # timeout = 10

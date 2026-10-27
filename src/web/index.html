@@ -56,6 +56,10 @@
   .menu .col button:disabled { opacity: 0.3; cursor: default; }
   .menu .entry { display: block; width: 100%; margin: 2px 0; padding: 4px 6px; border: none; text-align: left; }
   .menu .entry:hover { background: var(--bg); }
+  a.entry { color: var(--text); text-decoration: none; box-sizing: border-box; }
+  .menu p { margin: 4px 6px 8px; white-space: normal; max-width: 20rem; }
+  #update summary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  #update-msg.err { color: var(--danger); }
   /* Schmale Bildschirme: alles rechts vom Status hinter ☰ */
   @media (max-width: 720px) {
     #menu-btn, .narrow { display: inline; }
@@ -119,6 +123,13 @@
     <span id="status" class="off">getrennt</span>
     <button id="menu-btn" title="Menü">☰</button>
     <nav id="actions">
+      <details id="update" class="menu" hidden><summary class="button">Update ▾</summary><div>
+        <p id="update-text"></p>
+        <a id="update-notes" class="entry" target="_blank" rel="noopener">Änderungen ansehen</a>
+        <button id="update-install" class="entry">Jetzt aktualisieren</button>
+        <button id="update-check" class="entry">Erneut suchen</button>
+        <p id="update-msg"></p>
+      </div></details>
       <details id="view" class="menu"><summary class="button">Ansicht ▾</summary><div>
         <h2>Spalten</h2>
         <div id="columns"></div>
@@ -283,6 +294,37 @@ document.addEventListener("click", (e) => {
 $("menu-btn").onclick = () => document.querySelector("header").classList.toggle("open");
 $("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
 $("clients-btn").onclick = () => window.open("/clients", "_blank");
+
+// Hinweis auf eine neuere Version; einspielen nur auf Knopfdruck
+function showUpdate({ current, state }) {
+  const r = state.available;
+  $("update").hidden = !r;
+  if (!r) return;
+  $("update").querySelector("summary").textContent = `Update ${r.version} ▾`;
+  $("update-text").textContent = `BosLook ${r.version}${r.prerelease ? " (Vorabversion)" : ""} ist verfügbar, installiert ist ${current}.`;
+  $("update-notes").href = r.url;
+}
+async function loadUpdate() {
+  const res = await fetch("/api/update");
+  if (res.ok) showUpdate(await res.json());
+}
+$("update-check").onclick = async () => {
+  $("update-msg").textContent = "Suche …"; $("update-msg").className = "";
+  const res = await fetch("/api/update/check", { method: "POST" });
+  if (!res.ok) return;
+  const data = await res.json();
+  showUpdate(data);
+  $("update-msg").textContent = data.state.error ?? (data.state.available ? "" : "BosLook ist aktuell.");
+  $("update-msg").className = data.state.error ? "err" : "";
+};
+$("update-install").onclick = async () => {
+  if (!confirm("Update jetzt einspielen? BosLook startet danach neu; währenddessen werden keine Telegramme empfangen.")) return;
+  $("update-msg").textContent = "Lade und prüfe das Update …"; $("update-msg").className = "";
+  const res = await fetch("/api/update/install", { method: "POST" });
+  if (!res.ok) { $("update-msg").textContent = await res.text(); $("update-msg").className = "err"; return; }
+  $("update-msg").textContent = "Eingespielt, BosLook startet neu …";
+  setTimeout(() => location.reload(), 4000);
+};
 
 // Menü „Plugins“: Übersicht und je Plugin mit eigener Seite ein Eintrag
 async function pluginPages() {
@@ -467,6 +509,7 @@ async function showApp() {
   if (res.status === 401) return showLogin();
   const sources = await res.json();
   fetch("/api/me").then((r) => r.json()).then((m) => { $("version").textContent = m.version; });
+  loadUpdate();
   pluginPages();
   for (const s of sources) panel(s);
   await Promise.all(sources.map(loadOlder));

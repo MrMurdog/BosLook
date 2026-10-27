@@ -8,6 +8,9 @@
 //! Nur dann schickt der Server nach dem Verbindungsaufbau `{"config": "<TOML>"}` mit den
 //! Eingängen des Clients (leer = keine Fernkonfiguration). Erst danach meldet der Client den
 //! Zustand seiner Eingänge mit `{"status": {...}}`. So bleiben ältere Gegenstellen verträglich.
+//!
+//! Update (ab 0.3.0): `{"update": "<Version>"}` vom Server, nur an Clients ab 0.3.0. Der Client
+//! lädt diese Version aus den GitHub-Releases und startet neu.
 
 use crate::config::{ForwardConfig, RemoteConfig};
 use crate::telegram::Telegram;
@@ -47,7 +50,11 @@ pub struct Ack {
 pub enum FromServer {
     Ack(Ack),
     Config { config: String },
+    Update { update: String },
 }
+
+/// Ab dieser Version verstehen Clients `{"update": …}`
+pub const UPDATE_SINCE: &str = "0.3.0";
 
 /// Nachrichten vom Client an den Server
 #[derive(Serialize, Deserialize)]
@@ -155,7 +162,7 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
         // Neue Fernkonfiguration erst übernehmen, wenn alle Telegramme beim Server sind
         if restart && queue.items.is_empty() {
             ws.close(None).await.ok();
-            eprintln!("Fernkonfiguration geändert, BosLook startet neu");
+            eprintln!("Neue Fernkonfiguration bzw. Update, BosLook startet neu");
             crate::serve::restart();
         }
         tokio::select! {
@@ -175,10 +182,25 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
                             }
                         }
                         FromServer::Config { config } => {
-                            restart = apply_remote(remote, &config);
+                            restart |= apply_remote(remote, &config);
                             sent_status.get_or_insert_with(BTreeMap::new);
                             status_check.reset_immediately();
                         }
+                        FromServer::Update { update } if update != crate::update::CURRENT => {
+                            eprintln!("Server verlangt Update auf {update}");
+                            let version = update.clone();
+                            let result = tokio::task::spawn_blocking(move || crate::update::install(&crate::update::release(&version)?, "boslook")).await?;
+                            let state = match result {
+                                Ok(()) => {
+                                    restart = true;
+                                    InputState { ok: true, message: format!("{update} eingespielt, Neustart folgt") }
+                                }
+                                Err(e) => InputState { ok: false, message: format!("{update}: {e:#}") },
+                            };
+                            eprintln!("Update: {}", state.message);
+                            remote.status.lock().unwrap().insert("Update".into(), state);
+                        }
+                        FromServer::Update { .. } => {}
                     },
                     Some(Ok(Message::Close(_))) | None => bail!("Verbindung vom Server beendet"),
                     Some(Ok(_)) => {}

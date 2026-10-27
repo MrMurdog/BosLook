@@ -13,7 +13,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
@@ -34,8 +34,13 @@ pub struct App {
     clients: Mutex<Vec<ClientConfig>>,
     /// Verbindungen der Clients, nach Name
     client_state: Mutex<HashMap<String, ClientState>>,
-    /// Meldet verbundenen Clients, dass die Konfiguration gespeichert wurde
+    /// Meldet verbundenen Clients, dass die Konfiguration gespeichert wurde oder ein Update ansteht
     clients_changed: tokio::sync::watch::Sender<()>,
+    /// Clients, die auf die Version des Servers aktualisiert werden sollen
+    client_updates: Mutex<HashSet<String>>,
+    /// Auch Vorabversionen als Update anbieten
+    update_beta: bool,
+    update: Mutex<crate::update::State>,
     /// Fingerabdruck des selbst signierten Zertifikats, für den Einrichtungscode
     fingerprint: Option<String>,
     /// Weg zur Speicherung für Telegramme von Clients
@@ -50,6 +55,7 @@ pub struct Settings {
     pub secure_cookie: bool,
     pub clients: Vec<ClientConfig>,
     pub fingerprint: Option<String>,
+    pub update_beta: bool,
     pub ingest: mpsc::Sender<Telegram>,
     pub config_path: String,
     pub plugins: Arc<Plugins>,
@@ -68,6 +74,9 @@ impl App {
             clients: Mutex::new(s.clients),
             client_state: Mutex::new(HashMap::new()),
             clients_changed: tokio::sync::watch::Sender::new(()),
+            client_updates: Mutex::new(HashSet::new()),
+            update_beta: s.update_beta,
+            update: Mutex::new(crate::update::State::default()),
             fingerprint: s.fingerprint,
             ingest: s.ingest,
             config_path: s.config_path,
@@ -91,6 +100,17 @@ impl App {
         let mut list = self.inputs.clone();
         list.extend(stored.into_iter().filter(|s| !self.inputs.contains(s)));
         Ok(list)
+    }
+
+    /// Nach einer neueren Version suchen (blockiert)
+    pub fn check_update(&self) {
+        let state = crate::update::check(self.update_beta);
+        match (&state.available, &state.error) {
+            (Some(r), _) => eprintln!("Update verfügbar: BosLook {} ({})", r.version, r.url),
+            (None, Some(e)) => eprintln!("Suche nach Updates: {e}"),
+            (None, None) => {}
+        }
+        *self.update.lock().unwrap() = state;
     }
 
     /// Datenabfrage eines Plugins (`query`): `sources`, `telegrams` (wie `/api/telegrams`) oder
@@ -153,6 +173,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/clients", get(|| async { Html(include_str!("web/clients.html")) }))
         .route("/api/clients", get(clients))
         .route("/api/clients/setup", post(setup_code))
+        .route("/api/clients/update", post(update_clients))
+        .route("/api/update", get(update_state))
+        .route("/api/update/check", post(update_check))
+        .route("/api/update/install", post(update_install))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
@@ -336,6 +360,12 @@ async fn receive(mut socket: WebSocket, app: Arc<App>, name: String, version: Op
             msg = socket.recv() => msg,
             Ok(()) = changed.changed(), if sent.is_some() => {
                 next = app.clients.lock().unwrap().iter().find(|c| c.name == name).map(remote_config);
+                if app.client_updates.lock().unwrap().remove(&name) {
+                    let text = serde_json::to_string(&FromServer::Update { update: crate::update::CURRENT.into() }).unwrap();
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 continue;
             }
         };
@@ -392,6 +422,66 @@ async fn clients(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         })
         .collect();
     Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+struct UpdateClients {
+    names: Vec<String>,
+}
+
+/// Verbundene Clients ab 0.3.0 auf die Version des Servers bringen
+async fn update_clients(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): Json<UpdateClients>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let state = app.client_state.lock().unwrap().clone();
+    let able = |name: &String| {
+        state.get(name).is_some_and(|s| {
+            s.connected && s.version.as_deref().is_some_and(|v| !crate::update::newer(crate::forward::UPDATE_SINCE, v) && crate::update::newer(crate::update::CURRENT, v))
+        })
+    };
+    let names: Vec<String> = req.names.into_iter().filter(able).collect();
+    app.client_updates.lock().unwrap().extend(names.iter().cloned());
+    app.clients_changed.send_replace(());
+    Json(serde_json::json!({ "names": names })).into_response()
+}
+
+async fn update_state(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let state = app.update.lock().unwrap().clone();
+    Json(serde_json::json!({ "current": crate::update::CURRENT, "state": state })).into_response()
+}
+
+async fn update_check(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let checker = app.clone();
+    let _ = tokio::task::spawn_blocking(move || checker.check_update()).await;
+    update_state(State(app), headers).await
+}
+
+/// Gefundenes Update einspielen und neu starten
+async fn update_install(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(release) = app.update.lock().unwrap().available.clone() else {
+        return error(StatusCode::BAD_REQUEST, "Kein Update gefunden");
+    };
+    match tokio::task::spawn_blocking(move || crate::update::install(&release, "boslook")).await {
+        Ok(Ok(())) => {
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                crate::serve::restart();
+            });
+            StatusCode::ACCEPTED.into_response()
+        }
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }
 
 #[derive(Deserialize)]

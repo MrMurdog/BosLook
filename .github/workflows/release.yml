@@ -1,0 +1,157 @@
+# Baut BosLook für alle Plattformen und veröffentlicht ein Release auf GitHub.
+# Wird nur von Hand gestartet: Actions → Release → Run workflow.
+#
+# Gebaut wird in einem Debian-Bookworm-Container (glibc 2.36): Die Programme laufen auf
+# Debian 12, Raspberry Pi OS Bookworm, Ubuntu 24.04 und neuer. Ein eigener Runner muss Linux
+# mit Docker sein (Container-Jobs).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner: github (von GitHub gestellt) oder self-hosted (eigener, Linux mit Docker)"
+        type: choice
+        options: [github, self-hosted]
+        default: github
+      branch:
+        description: "Branch, aus dem gebaut wird"
+        type: string
+        default: main
+      version:
+        description: "Versionsnummer ohne v, muss mit Cargo.toml übereinstimmen (z. B. 0.3.0)"
+        type: string
+        required: true
+      prerelease:
+        description: "Vorabversion (automatisch: ja, wenn der Branch nicht main ist)"
+        type: choice
+        options: [automatisch, ja, nein]
+        default: automatisch
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  check:
+    name: Prüfen und testen
+    runs-on: ${{ inputs.runner == 'self-hosted' && 'self-hosted' || 'ubuntu-latest' }}
+    container: debian:bookworm
+    outputs:
+      sha: ${{ steps.info.outputs.sha }}
+      prerelease: ${{ steps.info.outputs.prerelease }}
+    steps:
+      - name: Pakete
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq git curl ca-certificates build-essential pkg-config libasound2-dev
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+      - name: Version und Tag prüfen
+        id: info
+        env:
+          VERSION: ${{ inputs.version }}
+          BRANCH: ${{ inputs.branch }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$cargo_version" != "$VERSION" ]; then
+            echo "::error::Version $VERSION passt nicht zu Cargo.toml ($cargo_version) im Branch $BRANCH"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::Tag v$VERSION gibt es schon"
+            exit 1
+          fi
+          case "$PRERELEASE" in
+            ja) pre=true ;;
+            nein) pre=false ;;
+            *) if [ "$BRANCH" = main ]; then pre=false; else pre=true; fi ;;
+          esac
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - name: Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --locked
+
+  build:
+    name: Bauen (${{ matrix.target }})
+    needs: check
+    runs-on: ${{ inputs.runner == 'self-hosted' && 'self-hosted' || 'ubuntu-latest' }}
+    container: debian:bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            packages: libasound2-dev
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross libasound2-dev:arm64
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+            packages: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libasound2-dev:armhf
+          - target: x86_64-pc-windows-gnu
+            packages: gcc-mingw-w64-x86-64 zip
+    steps:
+      - name: Pakete
+        env:
+          ARCH: ${{ matrix.arch }}
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          if [ -n "$ARCH" ]; then dpkg --add-architecture "$ARCH"; fi
+          apt-get update -qq
+          apt-get install -y -qq git curl ca-certificates build-essential pkg-config $PACKAGES
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Rust
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target "$TARGET"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Bauen und verpacken
+        run: .github/build.sh "${{ matrix.target }}" "${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Veröffentlichen
+    needs: [check, build]
+    runs-on: ${{ inputs.runner == 'self-hosted' && 'self-hosted' || 'ubuntu-latest' }}
+    container: debian:bookworm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Prüfsummen
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          target_commitish: ${{ needs.check.outputs.sha }}
+          name: BosLook ${{ inputs.version }}
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: dist/*

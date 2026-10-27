@@ -36,6 +36,21 @@ pub struct Config {
     /// Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen (0 = aus)
     #[serde(default = "default_notify_repeat")]
     pub notify_repeat: u64,
+    /// Einmal am Tag nach einer neuen Version suchen
+    #[serde(default = "default_true")]
+    pub update_check: bool,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// Nur fertige Versionen
+    #[default]
+    Stable,
+    /// Auch Vorabversionen
+    Beta,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +206,10 @@ fn plugin_tables<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, 
             _ => Err(D::Error::custom(format!("plugin.{name} muss ein Abschnitt [plugin.{name}] sein"))),
         })
         .collect()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_gain() -> String {

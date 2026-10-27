@@ -200,6 +200,10 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
                 field("notify_repeat", "Wiederholungen unterdrücken (s)", Input::Number)
                     .default(60)
                     .help("Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen, 0 = aus"),
+                field("update_check", "Nach Updates suchen", Input::Bool).default(true).help("Einmal am Tag bei GitHub nach einer neuen Version fragen"),
+                field("update_channel", "Updates", Input::Select(vec!["stable", "beta"]))
+                    .default("stable")
+                    .help("beta: auch Vorabversionen anbieten"),
             ],
         },
         Section {

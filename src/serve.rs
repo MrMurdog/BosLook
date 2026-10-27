@@ -111,6 +111,7 @@ pub async fn run(config_path: &str) -> Result<()> {
         // Windows: warten, bis der alte Prozess den Port freigegeben hat (siehe restart())
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+    crate::update::cleanup();
     let mut config = Config::load(config_path)?;
     let plugin_dir = crate::plugin::dir(config_path);
     validate(&config, &plugin_dir)?;
@@ -154,6 +155,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             secure_cookie: config.web.as_ref().is_some_and(|w| w.tls != Tls::Off),
             clients: config.clients,
             fingerprint,
+            update_beta: config.update_channel == crate::config::UpdateChannel::Beta,
             config_path: config_path.to_string(),
             ingest: tx.clone(),
             plugins: plugins.clone(),
@@ -168,6 +170,15 @@ pub async fn run(config_path: &str) -> Result<()> {
         std::thread::spawn(move || {
             if let Err(e) = run_input(&i, &tx, &status) {
                 report(&status, &i.name, false, format!("{e:#}"));
+            }
+        });
+    }
+    if config.update_check {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            loop {
+                app.check_update();
+                std::thread::sleep(crate::update::INTERVAL);
             }
         });
     }
@@ -421,7 +432,7 @@ pub fn restart() -> ! {
             let _ = child.wait();
         }
     }
-    let exe = std::env::current_exe().expect("Programmpfad");
+    let exe = crate::update::exe().expect("Programmpfad");
     let mut command = std::process::Command::new(exe);
     command.args(std::env::args_os().skip(1));
     #[cfg(unix)]

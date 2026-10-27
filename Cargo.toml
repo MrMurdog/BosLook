@@ -1,6 +1,6 @@
 [package]
 name = "boslook"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 
 [features]
@@ -61,3 +61,7 @@ winit = { version = "0.30", optional = true, default-features = false, features 
 # Build-Verzeichnis bleibt deutlich kleiner
 [profile.dev]
 debug = "line-tables-only"
+
+# Release-Programme ohne Symbole: rund ein Viertel kleiner, Updates laden schneller
+[profile.release]
+strip = true

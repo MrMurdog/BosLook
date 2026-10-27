@@ -1,11 +1,16 @@
 site_name: BosLook
-site_description: Dekoder für POCSAG, FMS und ZVEI – Plugins
+site_description: Dekoder für POCSAG, FMS und ZVEI
 docs_dir: docs
 theme:
   name: readthedocs
   locale: de
 nav:
   - Start: index.md
+  - Installation und Betrieb: installation.md
+  - Eingänge: eingaenge.md
+  - Verarbeitung und Alarme: verarbeitung.md
+  - Weboberfläche und Desktop-App: oberflaeche.md
+  - Plugins benutzen: plugins.md
   - Plugins entwickeln: PLUGINS.md
   - Anleitung für KI-Agenten: PLUGINS-AGENT.md
 markdown_extensions:

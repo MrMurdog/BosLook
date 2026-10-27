@@ -15,5 +15,6 @@ pub mod sdr;
 pub mod serve;
 pub mod setup;
 pub mod telegram;
+pub mod update;
 pub mod weather;
 pub mod web;
