@@ -81,6 +81,32 @@ gain = "auto"            # oder z. B. "38.6" (dB)
 Osmocom-Dateien (`rtl_fm.exe` mit DLLs) neben `boslook.exe` legen. Meldungen von `rtl_fm`
 erscheinen im Log von BosLook.
 
+### Mehrere Frequenzen mit einem Stick (rtl_sdr)
+
+Mit `type = "rtl_sdr"` liest BosLook die rohen Daten des Sticks über `rtl_sdr` (aus demselben
+Paket wie `rtl_fm`) und demoduliert jede Frequenz selbst. Alle Kanäle werden **gleichzeitig**
+empfangen, anders als beim Scan-Modus von `rtl_fm`. Jeder Kanal erscheint als eigener Reiter und
+lässt sich mit seinem Namen in Filtern, Bearbeitungsregeln und Alarmen verwenden:
+
+```toml
+[[input]]
+name = "Stick"
+type = "rtl_sdr"
+ppm = 42
+gain = "auto"
+[[input.channel]]
+name = "POCSAG Kreis"
+frequency = "173.255M"
+[[input.channel]]
+name = "FMS"
+frequency = "172.890M"
+```
+
+Die Frequenzen müssen innerhalb von 1 MHz liegen. Mittenfrequenz und Abtastrate (240 kS/s für
+eng beieinander liegende Kanäle, sonst 1,2 bzw. 2,4 MS/s) wählt BosLook selbst, dabei bleibt die
+Mitte mindestens 25 kHz von jedem Kanal entfernt. Ein Kanal braucht auf einem Raspberry Pi geschätzt
+etwa 10–20 % eines Kerns.
+
 ### stdin
 
 Als Reserve kann Live-Audio auch über stdin eingespeist werden (signed 16 Bit, mono, Abtastrate wie in der Konfiguration):

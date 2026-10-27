@@ -11,6 +11,7 @@ pub mod input;
 pub mod notify;
 pub mod plugin;
 pub mod rewrite;
+pub mod sdr;
 pub mod serve;
 pub mod setup;
 pub mod telegram;

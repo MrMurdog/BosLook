@@ -64,6 +64,11 @@ pub fn validate_inputs(inputs: &[InputConfig]) -> Result<()> {
         if inputs[..n].iter().any(|j| j.name == i.name) {
             bail!("Eingang '{}' ist doppelt vorhanden, die Namen müssen eindeutig sein", i.name);
         }
+        // Kanäle erscheinen wie Eingänge als Reiter, darum auch untereinander eindeutig
+        let sources: Vec<String> = inputs[..n].iter().flat_map(InputConfig::sources).collect();
+        if let Some(s) = i.sources().into_iter().find(|s| sources.contains(s)) {
+            bail!("Eingang '{}': der Name '{s}' ist schon vergeben", i.name);
+        }
         Bank::new(&i.decoders, 22050, i.pocsag).with_context(|| format!("Eingang '{}'", i.name))?;
         if let Source::RtlFm { frequency, gain, .. } = &i.source {
             if frequency.trim().is_empty() {
@@ -72,6 +77,18 @@ pub fn validate_inputs(inputs: &[InputConfig]) -> Result<()> {
             if gain != "auto" && gain.parse::<f32>().is_err() {
                 bail!("Eingang '{}': Verstärkung muss eine Zahl (dB) oder auto sein", i.name);
             }
+        }
+        if let Source::RtlSdr { gain, channels, .. } = &i.source {
+            if gain != "auto" && gain.parse::<f32>().is_err() {
+                bail!("Eingang '{}': Verstärkung muss eine Zahl (dB) oder auto sein", i.name);
+            }
+            for (m, c) in channels.iter().enumerate() {
+                if channels[..m].iter().any(|d| d.name == c.name) {
+                    bail!("Eingang '{}': Kanal '{}' ist doppelt vorhanden", i.name, c.name);
+                }
+            }
+            let frequencies = channels.iter().map(|c| crate::sdr::parse_frequency(&c.frequency).with_context(|| format!("Kanal '{}'", c.name))).collect::<Result<Vec<_>>>();
+            frequencies.and_then(|f| crate::sdr::plan(&f)).with_context(|| format!("Eingang '{}'", i.name))?;
         }
     }
     Ok(())
@@ -130,7 +147,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             inputs: config
                 .inputs
                 .iter()
-                .map(|i| i.name.clone())
+                .flat_map(InputConfig::sources)
                 .chain(config.weather.as_ref().map(|_| crate::weather::SOURCE.to_string()))
                 .chain(plugins.sources())
                 .collect(),
@@ -226,7 +243,7 @@ fn report(status: &InputStatus, name: &str, ok: bool, message: String) {
 /// Abtastrate, mit der BosLook `rtl_fm` startet
 const RTL_FM_RATE: u32 = 22050;
 
-/// Laufende `rtl_fm`; werden vor einem Neustart beendet, damit der Stick für den neuen Prozess frei ist
+/// Laufende `rtl_fm`/`rtl_sdr`; werden vor einem Neustart beendet, damit der Stick für den neuen Prozess frei ist
 static RTL_FM: std::sync::Mutex<Vec<Arc<std::sync::Mutex<std::process::Child>>>> = std::sync::Mutex::new(Vec::new());
 
 fn run_input(input: &InputConfig, tx: &mpsc::Sender<Telegram>, status: &InputStatus) -> Result<()> {
@@ -263,6 +280,13 @@ fn run_input(input: &InputConfig, tx: &mpsc::Sender<Telegram>, status: &InputSta
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
         },
+        Source::RtlSdr { .. } => loop {
+            let result = run_rtl_sdr(input, &report, tx);
+            if let Err(e) = result {
+                report(false, format!("{e:#}, neuer Versuch in 5 s"));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        },
         Source::RtlFm { .. } => loop {
             // Beendet sich rtl_fm (z. B. Stick abgezogen), nach kurzer Pause neu starten
             let result = run_rtl_fm(input, &report, &send);
@@ -277,47 +301,114 @@ fn run_input(input: &InputConfig, tx: &mpsc::Sender<Telegram>, status: &InputSta
 
 /// Startet `rtl_fm` und dekodiert dessen Ausgabe, bis es sich beendet
 fn run_rtl_fm(input: &InputConfig, report: &dyn Fn(bool, String), send: &dyn Fn(Vec<Decoded>)) -> Result<()> {
+    let Source::RtlFm { frequency, ppm, gain, device, squelch, program } = &input.source else { unreachable!() };
+    let mut args = vec!["-f".to_string(), frequency.clone(), "-M".into(), "fm".into(), "-s".into(), RTL_FM_RATE.to_string()];
+    args.extend(["-p".into(), ppm.to_string(), "-d".into(), device.clone(), "-l".into(), squelch.to_string()]);
+    if gain != "auto" {
+        args.extend(["-g".into(), gain.clone()]);
+    }
+    let mut bank = Bank::new(&input.decoders, RTL_FM_RATE, input.pocsag)?;
+    run_rtl(&input.name, program.as_deref().unwrap_or("rtl_fm"), &args, &format!("rtl_fm auf {frequency} gestartet"), report, |stdout| {
+        let read = input::read_raw(stdout, RTL_FM_RATE, |samples, _| send(bank.process(samples)));
+        send(bank.finish());
+        read
+    })
+}
+
+/// Startet `rtl_sdr` und demoduliert dessen IQ-Daten für jeden Kanal, bis es sich beendet
+fn run_rtl_sdr(input: &InputConfig, report: &dyn Fn(bool, String), tx: &mpsc::Sender<Telegram>) -> Result<()> {
+    use std::io::Read;
+    let Source::RtlSdr { ppm, gain, device, program, channels } = &input.source else { unreachable!() };
+    let frequencies = channels.iter().map(|c| crate::sdr::parse_frequency(&c.frequency)).collect::<Result<Vec<_>>>()?;
+    let plan = crate::sdr::plan(&frequencies)?;
+    let mut args = vec!["-f".to_string(), format!("{:.0}", plan.center), "-s".into(), plan.rate.to_string()];
+    args.extend(["-p".into(), ppm.to_string(), "-d".into(), device.clone()]);
+    if gain != "auto" {
+        args.extend(["-g".into(), gain.clone()]);
+    }
+    let mut demod: Vec<_> = channels
+        .iter()
+        .zip(&frequencies)
+        .map(|(c, f)| Ok((c.name.clone(), crate::sdr::Channel::new(f - plan.center, plan.rate), Bank::new(&input.decoders, crate::sdr::AUDIO_RATE, input.pocsag)?)))
+        .collect::<Result<_>>()?;
+    let send = |source: &str, decoded: Vec<Decoded>| {
+        for d in decoded {
+            let _ = tx.blocking_send(Telegram::new(d, source, chrono::Local::now()));
+        }
+    };
+    let names: Vec<_> = channels.iter().map(|c| format!("{} ({})", c.name, c.frequency)).collect();
+    let started = format!("rtl_sdr auf {:.3} MHz mit {} kS/s gestartet: {}", plan.center / 1e6, plan.rate / 1000, names.join(", "));
+    run_rtl(&input.name, program.as_deref().unwrap_or("rtl_sdr"), &args, &started, report, |mut stdout| {
+        // Etwa 30 ms je Block, damit Telegramme ohne spürbare Verzögerung erscheinen
+        let mut bytes = vec![0u8; 65_536];
+        let (mut iq, mut audio) = (Vec::new(), Vec::new());
+        let mut pending: Option<u8> = None;
+        loop {
+            let n = stdout.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            // Ein angefangenes IQ-Paar aus dem letzten Block vorn anfügen
+            let mut block: Vec<u8> = pending.take().into_iter().chain(bytes[..n].iter().copied()).collect();
+            if block.len() % 2 == 1 {
+                pending = block.pop();
+            }
+            iq.clear();
+            crate::sdr::iq_from_u8(&block, &mut iq);
+            for (name, channel, bank) in &mut demod {
+                audio.clear();
+                channel.process(&iq, &mut audio);
+                send(name, bank.process(&audio));
+            }
+        }
+        for (name, _, bank) in &mut demod {
+            send(name, bank.finish());
+        }
+        Ok(())
+    })
+}
+
+/// Startet ein Programm der rtl-sdr-Werkzeuge, übergibt dessen Ausgabe an `read` und meldet,
+/// warum es sich beendet hat
+fn run_rtl(
+    name: &str,
+    program: &str,
+    args: &[String],
+    started: &str,
+    report: &dyn Fn(bool, String),
+    read: impl FnOnce(std::process::ChildStdout) -> Result<()>,
+) -> Result<()> {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
-    let Source::RtlFm { frequency, ppm, gain, device, squelch, program } = &input.source else { unreachable!() };
-    let program = program.as_deref().unwrap_or("rtl_fm");
-    let mut command = Command::new(program);
-    command.args(["-f", frequency, "-M", "fm", "-s", &RTL_FM_RATE.to_string(), "-p", &ppm.to_string()]);
-    command.args(["-d", device, "-l", &squelch.to_string()]);
-    if gain != "auto" {
-        command.args(["-g", gain]);
-    }
-    command.arg("-").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| match e.kind() {
+    let tool = Path::new(program).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| program.to_string());
+    let mut child = Command::new(program).args(args).arg("-").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => anyhow::anyhow!(
-            "{program} nicht gefunden (Linux: apt install rtl-sdr; Windows: rtl_fm.exe neben boslook.exe legen oder Programm angeben)"
+            "{program} nicht gefunden (Linux: apt install rtl-sdr; Windows: {tool}.exe neben boslook.exe legen oder Programm angeben)"
         ),
         _ => anyhow::Error::new(e).context(format!("{program} starten")),
     })?;
-    // Ausgaben von rtl_fm ins Log; die letzte Zeile erklärt meist, warum es sich beendet hat
+    // Ausgaben ins Log; die letzte Zeile erklärt meist, warum es sich beendet hat
     let last = Arc::new(std::sync::Mutex::new(String::new()));
     let stderr = child.stderr.take().expect("stderr");
-    let (name, last_line) = (input.name.clone(), last.clone());
+    let (prefix, last_line) = (format!("Eingang '{name}': {tool}"), last.clone());
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()) {
-            eprintln!("Eingang '{name}': rtl_fm: {line}");
+            eprintln!("{prefix}: {line}");
             *last_line.lock().unwrap() = line;
         }
     });
     let stdout = child.stdout.take().expect("stdout");
     let child = Arc::new(std::sync::Mutex::new(child));
     RTL_FM.lock().unwrap().push(child.clone());
-    report(true, format!("rtl_fm auf {frequency} gestartet"));
-    let mut bank = Bank::new(&input.decoders, RTL_FM_RATE, input.pocsag)?;
-    let read = input::read_raw(stdout, RTL_FM_RATE, |samples, _| send(bank.process(samples)));
-    send(bank.finish());
+    report(true, started.to_string());
+    let result = read(stdout);
     RTL_FM.lock().unwrap().retain(|c| !Arc::ptr_eq(c, &child));
     let mut child = child.lock().unwrap();
     let _ = child.kill();
     let exit = child.wait()?;
-    read.context("Ausgabe von rtl_fm lesen")?;
+    result.with_context(|| format!("Ausgabe von {tool} lesen"))?;
     let last = last.lock().unwrap().clone();
-    bail!("rtl_fm beendet ({exit}){}", if last.is_empty() { String::new() } else { format!(": {last}") })
+    bail!("{tool} beendet ({exit}){}", if last.is_empty() { String::new() } else { format!(": {last}") })
 }
 
 const RESTART_WAIT: &str = "BOSLOOK_RESTART_WAIT";
@@ -365,4 +456,28 @@ fn ensure_self_signed(cert: &str, key: &str) -> Result<()> {
     }
     eprintln!("Selbst signiertes Zertifikat erstellt: {cert}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inputs(text: &str) -> Result<()> {
+        validate_inputs(&toml::from_str::<crate::config::RemoteConfig>(text)?.inputs)
+    }
+
+    #[test]
+    fn rtl_sdr_inputs_are_checked() {
+        let stick = |channels: &str| format!("[[input]]\nname = \"Stick\"\ntype = \"rtl_sdr\"\n{channels}");
+        let channel = |name: &str, f: &str| format!("[[input.channel]]\nname = \"{name}\"\nfrequency = \"{f}\"\n");
+        assert!(inputs(&stick(&(channel("A", "173.255M") + &channel("B", "172.9M")))).is_ok());
+        let err = inputs(&stick(&(channel("A", "173.255M") + &channel("B", "171.9M")))).unwrap_err();
+        assert!(format!("{err:#}").contains("höchstens 1000 kHz"), "{err:#}");
+        assert!(inputs(&stick(&(channel("A", "173.255M") + &channel("A", "172.9M")))).is_err());
+        assert!(inputs(&stick(&channel("A", "viel"))).is_err());
+        assert!(inputs(&stick("")).is_err());
+        // Kanalname gleich einem anderen Eingang
+        let err = inputs(&(stick(&channel("Funk", "173.255M")) + "[[input]]\nname = \"Funk\"\ntype = \"soundcard\"\n")).unwrap_err();
+        assert!(format!("{err:#}").contains("schon vergeben"), "{err:#}");
+    }
 }

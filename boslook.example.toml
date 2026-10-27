@@ -68,6 +68,20 @@ path = "test-wav/Leipsch_viel_cutted.wav"
 # device = "0"            # Index oder Seriennummer des Sticks
 # squelch = 0             # 0 = aus (für Dekoder empfohlen)
 
+# Mehrere Frequenzen gleichzeitig mit einem Stick (innerhalb von 1 MHz), über rtl_sdr und den
+# eigenen Demodulator. Jeder Kanal erscheint als eigener Reiter.
+# [[input]]
+# name = "Stick"
+# type = "rtl_sdr"
+# ppm = 0
+# gain = "auto"
+# [[input.channel]]
+# name = "POCSAG Kreis"
+# frequency = "173.255M"
+# [[input.channel]]
+# name = "FMS"
+# frequency = "172.890M"
+
 # Live-Audio von stdin (signed 16 Bit, mono), z. B.:
 #   rtl_fm -f 173.255M -M fm -s 22050 - | boslook serve
 #   arecord -f S16_LE -r 22050 -c 1 | boslook serve

@@ -126,15 +126,25 @@ pub fn match_fields() -> Vec<Field> {
 fn input_fields(device: Input) -> Vec<Field> {
     vec![
         field("name", "Name", Input::Text).required(),
-        field("type", "Typ", Input::Select(vec!["soundcard", "rtl_fm", "stdin", "wav"])).required(),
+        field("type", "Typ", Input::Select(vec!["soundcard", "rtl_fm", "rtl_sdr", "stdin", "wav"]))
+            .required()
+            .help("rtl_fm: eine Frequenz; rtl_sdr: mehrere Frequenzen innerhalb von 1 MHz mit einem Stick"),
         field("device", "Soundkarte", device).when("type", &["soundcard"]).help("leer = Standardgerät"),
         field("frequency", "Frequenz", Input::Text).required().when("type", &["rtl_fm"]).help("z. B. 173.255M"),
-        field("ppm", "Frequenzkorrektur (ppm)", Input::Number).default(0).when("type", &["rtl_fm"]),
-        field("gain", "Verstärkung", Input::Text).default("auto").when("type", &["rtl_fm"]).help("in dB, z. B. 38.6, oder auto"),
+        field("channel", "Kanäle", Input::Group(vec![
+            field("name", "Name", Input::Text).required().help("erscheint als eigener Reiter"),
+            field("frequency", "Frequenz", Input::Text).required().help("z. B. 173.255M"),
+        ]))
+        .when("type", &["rtl_sdr"])
+        .help("Alle Frequenzen innerhalb von 1 MHz"),
+        field("ppm", "Frequenzkorrektur (ppm)", Input::Number).default(0).when("type", &["rtl_fm", "rtl_sdr"]),
+        field("gain", "Verstärkung", Input::Text).default("auto").when("type", &["rtl_fm", "rtl_sdr"]).help("in dB, z. B. 38.6, oder auto"),
         // Gleicher Schlüssel wie bei der Soundkarte, darum ohne Standardwert im Formular
-        field("device", "Stick", Input::Text).when("type", &["rtl_fm"]).help("Index oder Seriennummer, leer = 0"),
+        field("device", "Stick", Input::Text).when("type", &["rtl_fm", "rtl_sdr"]).help("Index oder Seriennummer, leer = 0"),
         field("squelch", "Rauschsperre", Input::Number).default(0).when("type", &["rtl_fm"]).help("0 = aus (für Dekoder empfohlen)"),
-        field("program", "Programm", Input::Text).when("type", &["rtl_fm"]).help("Pfad zu rtl_fm, leer = aus dem PATH bzw. neben boslook"),
+        field("program", "Programm", Input::Text)
+            .when("type", &["rtl_fm", "rtl_sdr"])
+            .help("Pfad zu rtl_fm bzw. rtl_sdr, leer = aus dem PATH bzw. neben boslook"),
         field("sample_rate", "Abtastrate (Hz)", Input::Number)
             .required()
             .when("type", &["stdin"])
@@ -567,8 +577,22 @@ fn item_to_json(item: &Item) -> Option<Value> {
 fn json_to_table(item: &Value, keys: &[&str]) -> Result<Table> {
     let mut table = Table::new();
     for k in keys {
-        if let Some(v) = item.get(*k) {
-            table.insert(k, Item::Value(json_to_toml(v)?));
+        match item.get(*k) {
+            // Gruppe in einer Gruppe (z. B. Kanäle eines Eingangs bei einem Client): [[a.b.c]]
+            Some(Value::Array(a)) if !a.is_empty() && a.iter().all(Value::is_object) => {
+                let mut list = ArrayOfTables::new();
+                for entry in a {
+                    let mut keys: Vec<&str> = entry.as_object().into_iter().flat_map(|o| o.keys()).map(String::as_str).collect();
+                    // Name vorn, wie in den übrigen Abschnitten
+                    keys.sort_by_key(|k| *k != "name");
+                    list.push(json_to_table(entry, &keys)?);
+                }
+                table.insert(k, Item::ArrayOfTables(list));
+            }
+            Some(v) => {
+                table.insert(k, Item::Value(json_to_toml(v)?));
+            }
+            None => {}
         }
     }
     Ok(table)
@@ -704,6 +728,26 @@ pocsag = "auto"
         let client = &config.clients[0];
         assert!(client.remote && client.token_hash.is_empty());
         assert!(matches!(&client.inputs[0].source, crate::config::Source::RtlFm { ppm: 42, device, gain, .. } if device == "0" && gain == "auto"));
+    }
+
+    #[test]
+    fn rtl_sdr_channels() {
+        let channels = json!([{"name": "Kreis", "frequency": "173.255M"}, {"name": "FMS", "frequency": "172.89M"}]);
+        let input = json!({"name": "Stick", "type": "rtl_sdr", "ppm": "3", "gain": "auto", "channel": channels});
+        let text = roundtrip(|f| {
+            f["input"] = json!([input.clone()]);
+            f["client"] = json!([{"name": "Pi", "token_hash": "", "remote": true, "input": [input]}]);
+        })
+        .unwrap();
+        assert!(text.contains("[[input.channel]]\nname = \"Kreis\"\nfrequency = \"173.255M\"\n"), "{text}");
+        let config = crate::config::Config::parse(&text).unwrap();
+        crate::serve::validate_inputs(&config.inputs).unwrap();
+        crate::serve::validate_inputs(&config.clients[0].inputs).unwrap();
+        assert_eq!(config.inputs[0].sources(), ["Kreis", "FMS"]);
+        assert_eq!(config.clients[0].inputs[0].sources(), ["Kreis", "FMS"]);
+        // Und wieder zurück ins Formular
+        let form = to_json(&text, &server_schema(&[])).unwrap();
+        assert_eq!(form["client"][0]["input"][0]["channel"][1]["name"], "FMS");
     }
 
     #[test]

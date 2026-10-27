@@ -386,7 +386,7 @@ async fn clients(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
                 "name": c.name,
                 "token": !c.token_hash.is_empty(),
                 "remote": c.remote,
-                "inputs": c.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+                "inputs": c.inputs.iter().flat_map(crate::config::InputConfig::sources).collect::<Vec<_>>(),
                 "state": state.get(&c.name).cloned().unwrap_or_default(),
             })
         })
@@ -790,12 +790,22 @@ mod tests {
             name = "Karte"
             type = "soundcard"
             pocsag = "auto"
+            [[client.input]]
+            name = "Stick"
+            type = "rtl_sdr"
+            [[client.input.channel]]
+            name = "Kreis"
+            frequency = "173.255M"
+            [[client.input.channel]]
+            name = "FMS"
+            frequency = "172.89M"
             "#,
         )
         .unwrap();
         let text = remote_config(&config.clients[0]);
         let remote = crate::forward::parse_remote(&text).unwrap();
-        assert_eq!(remote.inputs.len(), 2, "{text}");
+        assert_eq!(remote.inputs.len(), 3, "{text}");
+        assert_eq!(remote.inputs[2].sources(), ["Kreis", "FMS"]);
         assert!(matches!(&remote.inputs[0].source, crate::config::Source::RtlFm { ppm: -3, program: None, .. }));
         assert!(matches!(&remote.inputs[1].source, crate::config::Source::Soundcard { device: None }));
         assert_eq!(remote.inputs[1].pocsag, crate::decoder::pocsag::Format::Auto);

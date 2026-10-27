@@ -138,6 +138,39 @@ pub enum Source {
         /// Programm, falls `rtl_fm` nicht im PATH liegt
         program: Option<String>,
     },
+    /// Mehrere Kanäle aus einem RTL-SDR-Stick über `rtl_sdr` und eigenen Demodulator (siehe `sdr.rs`)
+    RtlSdr {
+        #[serde(default)]
+        ppm: i32,
+        #[serde(default = "default_gain")]
+        gain: String,
+        #[serde(default = "default_rtl_device")]
+        device: String,
+        /// Programm, falls `rtl_sdr` nicht im PATH liegt
+        program: Option<String>,
+        /// Jeder Kanal erscheint als eigener Reiter
+        #[serde(default, rename = "channel")]
+        channels: Vec<ChannelConfig>,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelConfig {
+    pub name: String,
+    /// z. B. `173.255M`
+    pub frequency: String,
+}
+
+impl InputConfig {
+    /// Namen, unter denen die Telegramme dieses Eingangs erscheinen (Reiter): die Kanäle eines
+    /// Sticks mit `rtl_sdr`, sonst der Name des Eingangs
+    pub fn sources(&self) -> Vec<String> {
+        match &self.source {
+            Source::RtlSdr { channels, .. } => channels.iter().map(|c| c.name.clone()).collect(),
+            _ => vec![self.name.clone()],
+        }
+    }
 }
 
 /// Eingänge, die ein Client vom Server bekommt (Fernkonfiguration, siehe `forward.rs`)
