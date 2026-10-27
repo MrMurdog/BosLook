@@ -2,7 +2,7 @@ use crate::filter::FilterConfig;
 use crate::notify::{AlarmConfig, NotifierConfig};
 use crate::rewrite::RewriteConfig;
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,8 +74,15 @@ pub struct UserConfig {
 #[serde(deny_unknown_fields)]
 pub struct ClientConfig {
     pub name: String,
-    /// Argon2-Hash des Tokens, erzeugt mit `boslook hash-password`
+    /// Argon2-Hash des Tokens, erzeugt mit `boslook hash-password` oder beim Einrichtungscode;
+    /// leer = noch nicht eingerichtet
+    #[serde(default)]
     pub token_hash: String,
+    /// Fernkonfiguration: Der Client nimmt statt seiner eigenen Eingänge die unter `inputs`
+    #[serde(default)]
+    pub remote: bool,
+    #[serde(default, rename = "input")]
+    pub inputs: Vec<InputConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,9 +96,11 @@ pub struct ForwardConfig {
     /// Zertifikat des Servers (bei `tls = "self-signed"` dessen `cert`-Datei), sonst
     /// wird das Zertifikat über die üblichen Zertifizierungsstellen geprüft
     pub cert: Option<String>,
+    /// SHA-256-Fingerabdruck des Server-Zertifikats (aus dem Einrichtungscode), wirkt wie `cert`
+    pub fingerprint: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InputConfig {
     pub name: String,
     #[serde(flatten)]
@@ -103,14 +112,40 @@ pub struct InputConfig {
     pub pocsag: crate::decoder::pocsag::Format,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Source {
     Wav { path: String },
     /// Rohe Samples (s16le, mono) von stdin, z. B. `rtl_fm ... | boslook serve`
     Stdin { sample_rate: u32 },
     /// Soundkarte; `device` wie von `boslook devices` angezeigt, sonst das Standardgerät
     Soundcard { device: Option<String> },
+    /// Ein RTL-SDR-Stick über `rtl_fm`, das BosLook selbst startet
+    RtlFm {
+        /// z. B. `173.255M`
+        frequency: String,
+        /// Frequenzkorrektur des Sticks
+        #[serde(default)]
+        ppm: i32,
+        /// Verstärkung in dB oder `auto`
+        #[serde(default = "default_gain")]
+        gain: String,
+        /// Index oder Seriennummer des Sticks
+        #[serde(default = "default_rtl_device")]
+        device: String,
+        #[serde(default)]
+        squelch: u32,
+        /// Programm, falls `rtl_fm` nicht im PATH liegt
+        program: Option<String>,
+    },
+}
+
+/// Eingänge, die ein Client vom Server bekommt (Fernkonfiguration, siehe `forward.rs`)
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteConfig {
+    #[serde(default, rename = "input")]
+    pub inputs: Vec<InputConfig>,
 }
 
 fn plugin_tables<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, toml::Table)>, D::Error> {
@@ -123,6 +158,14 @@ fn plugin_tables<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, 
             _ => Err(D::Error::custom(format!("plugin.{name} muss ein Abschnitt [plugin.{name}] sein"))),
         })
         .collect()
+}
+
+fn default_gain() -> String {
+    "auto".into()
+}
+
+fn default_rtl_device() -> String {
+    "0".into()
 }
 
 fn default_database() -> String {

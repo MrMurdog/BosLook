@@ -3,8 +3,13 @@
 //! Protokoll über WebSocket (`/api/ingest`): Der Client schickt `{"seq": n, "telegram": {...}}`,
 //! der Server bestätigt mit `{"ack": n}`. Unbestätigte Telegramme werden gepuffert und nach
 //! einem Verbindungsabbruch erneut gesendet.
+//!
+//! Fernkonfiguration (ab 0.2.2): Der Client nennt seine Version im Header `x-boslook-version`.
+//! Nur dann schickt der Server nach dem Verbindungsaufbau `{"config": "<TOML>"}` mit den
+//! Eingängen des Clients (leer = keine Fernkonfiguration). Erst danach meldet der Client den
+//! Zustand seiner Eingänge mit `{"status": {...}}`. So bleiben ältere Gegenstellen verträglich.
 
-use crate::config::ForwardConfig;
+use crate::config::{ForwardConfig, RemoteConfig};
 use crate::telegram::Telegram;
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -12,8 +17,9 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -35,6 +41,52 @@ pub struct Ack {
     pub ack: u64,
 }
 
+/// Nachrichten vom Server an den Client
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FromServer {
+    Ack(Ack),
+    Config { config: String },
+}
+
+/// Nachrichten vom Client an den Server
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FromClient {
+    Telegram(Envelope),
+    Status { status: BTreeMap<String, InputState> },
+}
+
+/// Zustand eines Eingangs, z. B. „Soundkarte mit 48000 Hz geöffnet" oder eine Fehlermeldung
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputState {
+    pub ok: bool,
+    pub message: String,
+}
+
+/// Zustand aller Eingänge, nach Name
+pub type InputStatus = Arc<Mutex<BTreeMap<String, InputState>>>;
+
+/// Datei, in der ein Client die Eingänge vom Server aufhebt (neben der Konfiguration)
+pub fn remote_path(config_path: &str) -> PathBuf {
+    Path::new(config_path).with_extension("remote.toml")
+}
+
+/// Fernkonfiguration des Clients: wo sie liegt und welche gerade läuft
+pub struct Remote {
+    pub path: PathBuf,
+    /// Text der laufenden Fernkonfiguration, leer = eigene Eingänge
+    pub running: String,
+    pub status: InputStatus,
+}
+
+/// Prüft eine Fernkonfiguration (leer = keine)
+pub fn parse_remote(text: &str) -> Result<RemoteConfig> {
+    let remote: RemoteConfig = toml::from_str(text)?;
+    crate::serve::validate_inputs(&remote.inputs)?;
+    Ok(remote)
+}
+
 struct Queue {
     items: VecDeque<(u64, Telegram)>,
     next: u64,
@@ -51,10 +103,10 @@ impl Queue {
     }
 }
 
-pub async fn run(config: ForwardConfig, mut rx: mpsc::Receiver<Telegram>) {
+pub async fn run(config: ForwardConfig, mut rx: mpsc::Receiver<Telegram>, remote: Remote) {
     let mut queue = Queue { items: VecDeque::new(), next: 0 };
     loop {
-        if let Err(e) = session(&config, &mut rx, &mut queue).await {
+        if let Err(e) = session(&config, &mut rx, &mut queue, &remote).await {
             // Manche Fehler wiederholen den Text ihrer Ursache, darum doppelte Teile weglassen
             let mut text = e.to_string();
             for cause in e.chain().skip(1).map(|c| c.to_string()) {
@@ -76,14 +128,15 @@ pub async fn run(config: ForwardConfig, mut rx: mpsc::Receiver<Telegram>) {
     }
 }
 
-async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queue: &mut Queue) -> Result<()> {
+async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queue: &mut Queue, remote: &Remote) -> Result<()> {
     let url = format!("{}/api/ingest", config.server.trim_end_matches('/'))
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
     let mut request = url.as_str().into_client_request()?;
     request.headers_mut().insert("x-boslook-client", config.name.parse()?);
     request.headers_mut().insert("authorization", format!("Bearer {}", config.token).parse()?);
-    let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config(config.cert.as_deref())?));
+    request.headers_mut().insert("x-boslook-version", env!("CARGO_PKG_VERSION").parse()?);
+    let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config(config.cert.as_deref(), config.fingerprint.as_deref())?));
     let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
         .await
         .context("Verbindung fehlgeschlagen")?;
@@ -94,7 +147,17 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
     }
     let mut ping = tokio::time::interval(PING);
     let mut last_seen = Instant::now();
+    // Zustand der Eingänge erst melden, wenn der Server Fernkonfiguration kennt
+    let mut sent_status = None;
+    let mut status_check = tokio::time::interval(Duration::from_secs(2));
+    let mut restart = false;
     loop {
+        // Neue Fernkonfiguration erst übernehmen, wenn alle Telegramme beim Server sind
+        if restart && queue.items.is_empty() {
+            ws.close(None).await.ok();
+            eprintln!("Fernkonfiguration geändert, BosLook startet neu");
+            crate::serve::restart();
+        }
         tokio::select! {
             t = rx.recv() => {
                 let Some(t) = t else { return Ok(()) };
@@ -105,15 +168,29 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
             msg = ws.next() => {
                 last_seen = Instant::now();
                 match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        let ack: Ack = serde_json::from_str(&text)?;
-                        while queue.items.front().is_some_and(|(seq, _)| *seq <= ack.ack) {
-                            queue.items.pop_front();
+                    Some(Ok(Message::Text(text))) => match serde_json::from_str(&text)? {
+                        FromServer::Ack(ack) => {
+                            while queue.items.front().is_some_and(|(seq, _)| *seq <= ack.ack) {
+                                queue.items.pop_front();
+                            }
                         }
-                    }
+                        FromServer::Config { config } => {
+                            restart = apply_remote(remote, &config);
+                            sent_status.get_or_insert_with(BTreeMap::new);
+                            status_check.reset_immediately();
+                        }
+                    },
                     Some(Ok(Message::Close(_))) | None => bail!("Verbindung vom Server beendet"),
                     Some(Ok(_)) => {}
                     Some(Err(e)) => return Err(e.into()),
+                }
+            }
+            _ = status_check.tick() => {
+                let Some(sent) = &mut sent_status else { continue };
+                let status = remote.status.lock().unwrap().clone();
+                if status != *sent {
+                    ws.send(Message::Text(serde_json::to_string(&FromClient::Status { status: status.clone() })?.into())).await?;
+                    *sent = status;
                 }
             }
             _ = ping.tick() => {
@@ -127,24 +204,60 @@ async fn session(config: &ForwardConfig, rx: &mut mpsc::Receiver<Telegram>, queu
     }
 }
 
+/// Fernkonfiguration vom Server speichern; `true`, wenn sie sich gegenüber der laufenden geändert
+/// hat und BosLook neu starten muss
+fn apply_remote(remote: &Remote, config: &str) -> bool {
+    if config == remote.running {
+        return false;
+    }
+    let saved = if config.is_empty() {
+        match std::fs::remove_file(&remote.path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    } else {
+        parse_remote(config).and_then(|_| Ok(std::fs::write(&remote.path, config)?))
+    };
+    if let Err(e) = saved {
+        let message = format!("Fernkonfiguration nicht übernommen: {e:#}");
+        eprintln!("{message}");
+        remote.status.lock().unwrap().insert("Fernkonfiguration".into(), InputState { ok: false, message });
+        return false;
+    }
+    true
+}
+
 fn text(seq: u64, telegram: &Telegram) -> Message {
     let envelope = Envelope { seq, telegram: telegram.clone() };
     Message::Text(serde_json::to_string(&envelope).unwrap().into())
 }
 
-/// TLS für Verbindungen zu einem BosLook-Server: mit `cert` wird genau dieses Zertifikat
-/// akzeptiert, sonst wird über die üblichen Zertifizierungsstellen geprüft.
-pub fn tls_config(cert: Option<&str>) -> Result<rustls::ClientConfig> {
+/// SHA-256-Fingerabdruck eines Zertifikats, z. B. `AB:CD:…`
+pub fn fingerprint(cert: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(cert).iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+}
+
+/// Fingerabdruck der Zertifikatsdatei (PEM)
+pub fn fingerprint_file(path: &str) -> Result<String> {
+    Ok(fingerprint(CertificateDer::from_pem_file(path).with_context(|| format!("Zertifikat {path}"))?.as_ref()))
+}
+
+/// TLS für Verbindungen zu einem BosLook-Server: mit `cert` (Datei) oder `fingerprint` wird genau
+/// dieses Zertifikat akzeptiert, sonst wird über die üblichen Zertifizierungsstellen geprüft.
+pub fn tls_config(cert: Option<&str>, fingerprint: Option<&str>) -> Result<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
-    Ok(match cert {
-        Some(path) => {
-            let cert = CertificateDer::from_pem_file(path).with_context(|| format!("Zertifikat {path}"))?;
-            builder
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(Pinned { cert, provider }))
-                .with_no_client_auth()
-        }
+    let pinned = match (cert, fingerprint) {
+        (Some(path), _) => Some(fingerprint_file(path)?),
+        (None, Some(f)) => Some(f.to_string()),
+        (None, None) => None,
+    };
+    Ok(match pinned {
+        Some(fingerprint) => builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(Pinned { fingerprint: normalize(&fingerprint), provider }))
+            .with_no_client_auth(),
         None => {
             let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
             builder.with_root_certificates(roots).with_no_client_auth()
@@ -152,10 +265,16 @@ pub fn tls_config(cert: Option<&str>) -> Result<rustls::ClientConfig> {
     })
 }
 
+/// Fingerabdruck ohne Doppelpunkte und in Großbuchstaben, zum Vergleichen
+fn normalize(fingerprint: &str) -> String {
+    fingerprint.chars().filter(char::is_ascii_hexdigit).collect::<String>().to_uppercase()
+}
+
 /// Akzeptiert genau das hinterlegte (z. B. selbst signierte) Server-Zertifikat, unabhängig vom Hostnamen.
 #[derive(Debug)]
 struct Pinned {
-    cert: CertificateDer<'static>,
+    /// SHA-256 des Zertifikats, siehe [`normalize`]
+    fingerprint: String,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
@@ -168,10 +287,10 @@ impl ServerCertVerifier for Pinned {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if end_entity.as_ref() == self.cert.as_ref() {
+        if normalize(&fingerprint(end_entity.as_ref())) == self.fingerprint {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(rustls::Error::General("Server-Zertifikat stimmt nicht mit forward.cert überein".into()))
+            Err(rustls::Error::General("Server-Zertifikat stimmt nicht mit cert bzw. fingerprint überein".into()))
         }
     }
 

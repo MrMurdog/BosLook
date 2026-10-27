@@ -1,5 +1,7 @@
 # BosLook – Beispielkonfiguration für einen Client, der seine Telegramme an einen
 # BosLook-Server weiterleitet. Kopieren nach boslook.toml und anpassen.
+# Einfacher: auf dem Server unter "Clients" einen Einrichtungscode erzeugen und hier
+# `boslook setup <code>` ausführen, das schreibt diese Datei.
 #
 # Ohne [web] läuft keine Weboberfläche; die Telegramme werden trotzdem lokal gespeichert.
 
@@ -14,6 +16,8 @@ token = "ERSETZEN"
 # Nur bei tls = "self-signed" auf dem Server: dessen Zertifikatsdatei (boslook-cert.pem)
 # hierher kopieren. Dann wird genau dieses Zertifikat akzeptiert.
 # cert = "server-cert.pem"
+# Statt cert geht auch der SHA-256-Fingerabdruck des Zertifikats (steht im Einrichtungscode)
+# fingerprint = "AB:CD:…"
 
 [[input]]
 name = "Funkscanner"

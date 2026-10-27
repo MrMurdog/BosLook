@@ -12,6 +12,7 @@ pub mod notify;
 pub mod plugin;
 pub mod rewrite;
 pub mod serve;
+pub mod setup;
 pub mod telegram;
 pub mod weather;
 pub mod web;

@@ -1,7 +1,7 @@
 use crate::config::{ClientConfig, UserConfig};
 use crate::db::Db;
 use crate::descriptions::{self, Description, Search};
-use crate::forward::{Ack, Envelope};
+use crate::forward::{Ack, Envelope, FromClient, FromServer, InputState};
 use crate::plugin::Plugins;
 use crate::telegram::{Decoded, Kind, Telegram};
 use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
@@ -12,8 +12,8 @@ use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
@@ -30,7 +30,14 @@ pub struct App {
     /// Sitzungs-Token -> Benutzername
     sessions: Mutex<HashMap<String, String>>,
     secure_cookie: bool,
-    clients: Vec<ClientConfig>,
+    /// Ein neuer Einrichtungscode ändert das Token sofort, ohne Neustart
+    clients: Mutex<Vec<ClientConfig>>,
+    /// Verbindungen der Clients, nach Name
+    client_state: Mutex<HashMap<String, ClientState>>,
+    /// Meldet verbundenen Clients, dass die Konfiguration gespeichert wurde
+    clients_changed: tokio::sync::watch::Sender<()>,
+    /// Fingerabdruck des selbst signierten Zertifikats, für den Einrichtungscode
+    fingerprint: Option<String>,
     /// Weg zur Speicherung für Telegramme von Clients
     ingest: mpsc::Sender<Telegram>,
     config_path: String,
@@ -42,6 +49,7 @@ pub struct Settings {
     pub inputs: Vec<String>,
     pub secure_cookie: bool,
     pub clients: Vec<ClientConfig>,
+    pub fingerprint: Option<String>,
     pub ingest: mpsc::Sender<Telegram>,
     pub config_path: String,
     pub plugins: Arc<Plugins>,
@@ -57,7 +65,10 @@ impl App {
             inputs: s.inputs,
             sessions: Mutex::new(HashMap::new()),
             secure_cookie: s.secure_cookie,
-            clients: s.clients,
+            clients: Mutex::new(s.clients),
+            client_state: Mutex::new(HashMap::new()),
+            clients_changed: tokio::sync::watch::Sender::new(()),
+            fingerprint: s.fingerprint,
             ingest: s.ingest,
             config_path: s.config_path,
             plugins: s.plugins,
@@ -139,6 +150,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/telegrams", get(telegrams))
         .route("/api/live", get(live))
         .route("/api/ingest", get(ingest))
+        .route("/clients", get(|| async { Html(include_str!("web/clients.html")) }))
+        .route("/api/clients", get(clients))
+        .route("/api/clients/setup", post(setup_code))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/form", get(get_form).put(put_form))
         .route("/api/restart", post(restart))
@@ -262,27 +276,83 @@ async fn send_live(mut socket: WebSocket, mut rx: broadcast::Receiver<Telegram>)
     }
 }
 
+/// Verbindung eines Clients, für die Seite „Clients"
+#[derive(Clone, Default, Serialize)]
+struct ClientState {
+    connected: bool,
+    version: Option<String>,
+    /// Verbunden seit bzw. getrennt seit
+    since: Option<chrono::DateTime<chrono::Local>>,
+    inputs: BTreeMap<String, InputState>,
+}
+
 /// Telegramme von einem Client annehmen (siehe `forward.rs`).
 async fn ingest(State(app): State<Arc<App>>, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     let header = |name| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
     let name = header(header::HeaderName::from_static("x-boslook-client"));
     let token = header(header::AUTHORIZATION).strip_prefix("Bearer ").unwrap_or_default().to_string();
-    let Some(hash) = app.clients.iter().find(|c| c.name == name).map(|c| c.token_hash.clone()) else {
+    // Ältere Clients schicken keine Version und verstehen keine Fernkonfiguration
+    let version = Some(header(header::HeaderName::from_static("x-boslook-version"))).filter(|v| !v.is_empty());
+    let Some((hash, config)) = app.clients.lock().unwrap().iter().find(|c| c.name == name).map(|c| (c.token_hash.clone(), remote_config(c))) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if !verify(hash, token).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    ws.on_upgrade(move |socket| receive(socket, app, name))
+    let config = version.is_some().then_some(config);
+    ws.on_upgrade(move |socket| receive(socket, app, name, version, config))
 }
 
-async fn receive(mut socket: WebSocket, app: Arc<App>, name: String) {
-    eprintln!("Client '{name}' verbunden");
-    while let Some(Ok(msg)) = socket.recv().await {
+/// Eingänge für einen Client mit Fernkonfiguration als TOML, sonst leer
+fn remote_config(c: &ClientConfig) -> String {
+    #[derive(Serialize)]
+    struct Remote<'a> {
+        input: &'a [crate::config::InputConfig],
+    }
+    if !c.remote {
+        return String::new();
+    }
+    let inputs = toml::to_string(&Remote { input: &c.inputs }).unwrap_or_default();
+    format!("# Eingänge von Client '{}', vom Server (Fernkonfiguration). Änderungen hier werden überschrieben.\n{inputs}", c.name)
+}
+
+async fn receive(mut socket: WebSocket, app: Arc<App>, name: String, version: Option<String>, config: Option<String>) {
+    eprintln!("Client '{name}' verbunden{}", version.as_ref().map(|v| format!(" (Version {v})")).unwrap_or_default());
+    let state = ClientState { connected: true, version, since: Some(chrono::Local::now()), inputs: BTreeMap::new() };
+    app.client_state.lock().unwrap().insert(name.clone(), state);
+    let mut changed = app.clients_changed.subscribe();
+    let mut sent = None;
+    let mut next = config;
+    loop {
+        // Fernkonfiguration beim Verbinden und nach jedem Speichern, wenn sie sich geändert hat
+        if let Some(config) = next.take().filter(|c| sent.as_ref() != Some(c)) {
+            let text = serde_json::to_string(&FromServer::Config { config: config.clone() }).unwrap();
+            if socket.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+            sent = Some(config);
+        }
+        let msg = tokio::select! {
+            msg = socket.recv() => msg,
+            Ok(()) = changed.changed(), if sent.is_some() => {
+                next = app.clients.lock().unwrap().iter().find(|c| c.name == name).map(remote_config);
+                continue;
+            }
+        };
+        let Some(Ok(msg)) = msg else { break };
         let Message::Text(text) = msg else { continue };
-        let Ok(Envelope { seq, telegram: t }) = serde_json::from_str(&text) else {
-            eprintln!("Client '{name}': ungültige Nachricht");
-            break;
+        let Envelope { seq, telegram: t } = match serde_json::from_str(&text) {
+            Ok(FromClient::Telegram(envelope)) => envelope,
+            Ok(FromClient::Status { status }) => {
+                if let Some(s) = app.client_state.lock().unwrap().get_mut(&name) {
+                    s.inputs = status;
+                }
+                continue;
+            }
+            Err(_) => {
+                eprintln!("Client '{name}': ungültige Nachricht");
+                break;
+            }
         };
         // Filtern und Beschreibungen nachschlagen wie bei eigenen Eingängen (siehe serve.rs)
         if app.ingest.send(t).await.is_err() {
@@ -293,7 +363,84 @@ async fn receive(mut socket: WebSocket, app: Arc<App>, name: String) {
             break;
         }
     }
+    if let Some(s) = app.client_state.lock().unwrap().get_mut(&name) {
+        s.connected = false;
+        s.since = Some(chrono::Local::now());
+    }
     eprintln!("Client '{name}' getrennt");
+}
+
+/// Konfigurierte Clients mit ihrem Zustand
+async fn clients(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let state = app.client_state.lock().unwrap();
+    let list: Vec<_> = app
+        .clients
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "token": !c.token_hash.is_empty(),
+                "remote": c.remote,
+                "inputs": c.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+                "state": state.get(&c.name).cloned().unwrap_or_default(),
+            })
+        })
+        .collect();
+    Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+struct SetupRequest {
+    name: String,
+    /// Adresse, unter der der Client den Server erreicht (aus dem Browser vorbelegt)
+    server: String,
+}
+
+/// Neues Token für einen Client erzeugen, in der Konfiguration speichern und als
+/// Einrichtungscode zurückgeben. Das alte Token wird damit ungültig.
+async fn setup_code(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): Json<SetupRequest>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let server = req.server.trim().trim_end_matches('/').to_string();
+    if !(server.starts_with("http://") || server.starts_with("https://")) {
+        return error(StatusCode::BAD_REQUEST, "Die Adresse muss mit http:// oder https:// beginnen");
+    }
+    let mut bytes = [0u8; 24];
+    if getrandom::fill(&mut bytes).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let (path, name, secret) = (app.config_path.clone(), req.name.clone(), token.clone());
+    let text = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let hash = crate::form::hash(&secret)?;
+        let mut doc: toml_edit::DocumentMut = std::fs::read_to_string(&path)?.parse()?;
+        let client = doc
+            .get_mut("client")
+            .and_then(toml_edit::Item::as_array_of_tables_mut)
+            .and_then(|list| list.iter_mut().find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name.as_str())))
+            .ok_or_else(|| anyhow::anyhow!("Client '{name}' steht nicht in der gespeicherten Konfiguration, bitte erst unter „Einstellungen“ anlegen und speichern"))?;
+        client["token_hash"] = toml_edit::value(hash);
+        Ok(doc.to_string())
+    })
+    .await;
+    let text = match text {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => return error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let saved = save_config(&app, text);
+    if !saved.status().is_success() {
+        return saved;
+    }
+    let fingerprint = server.starts_with("https://").then(|| app.fingerprint.clone()).flatten();
+    let code = crate::setup::SetupCode { server, name: req.name, token, fingerprint };
+    Json(serde_json::json!({ "code": code.encode() })).into_response()
 }
 
 async fn get_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -359,11 +506,13 @@ fn save_config(app: &App, text: String) -> Response {
         if c.web.is_none() {
             anyhow::bail!("[web] fehlt, die Weboberfläche wäre danach nicht mehr erreichbar");
         }
-        crate::serve::validate(&c, &crate::plugin::dir(&app.config_path))
+        crate::serve::validate(&c, &crate::plugin::dir(&app.config_path))?;
+        Ok(c)
     });
-    if let Err(e) = checked {
-        return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
-    }
+    let config = match checked {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    };
     // Erst in eine temporäre Datei schreiben, damit die Konfiguration nie halb gespeichert ist
     let tmp = format!("{}.tmp", app.config_path);
     let result = std::fs::write(&tmp, &text)
@@ -371,7 +520,12 @@ fn save_config(app: &App, text: String) -> Response {
         .and_then(|m| std::fs::set_permissions(&tmp, m.permissions()))
         .and_then(|_| std::fs::rename(&tmp, &app.config_path));
     match result {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            // Clients (Tokens, Fernkonfiguration) gelten sofort, alles andere nach einem Neustart
+            *app.clients.lock().unwrap() = config.clients;
+            app.clients_changed.send_replace(());
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -617,6 +771,38 @@ mod tests {
         let status = r.status();
         let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         (status, ct, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[test]
+    fn remote_config_round_trip() {
+        let config = crate::config::Config::parse(
+            r#"
+            [[client]]
+            name = "Pi"
+            token_hash = ""
+            remote = true
+            [[client.input]]
+            name = "Funk"
+            type = "rtl_fm"
+            frequency = "173.255M"
+            ppm = -3
+            [[client.input]]
+            name = "Karte"
+            type = "soundcard"
+            pocsag = "auto"
+            "#,
+        )
+        .unwrap();
+        let text = remote_config(&config.clients[0]);
+        let remote = crate::forward::parse_remote(&text).unwrap();
+        assert_eq!(remote.inputs.len(), 2, "{text}");
+        assert!(matches!(&remote.inputs[0].source, crate::config::Source::RtlFm { ppm: -3, program: None, .. }));
+        assert!(matches!(&remote.inputs[1].source, crate::config::Source::Soundcard { device: None }));
+        assert_eq!(remote.inputs[1].pocsag, crate::decoder::pocsag::Format::Auto);
+        // Ohne Fernkonfiguration nichts schicken
+        let mut client = config.clients.into_iter().next().unwrap();
+        client.remote = false;
+        assert_eq!(remote_config(&client), "");
     }
 
     #[tokio::test]

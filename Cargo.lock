@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "boslook"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -770,6 +770,7 @@ dependencies = [
  "clap",
  "cpal",
  "csv",
+ "data-encoding",
  "eframe",
  "egui_extras",
  "encoding_rs",
@@ -786,6 +787,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tokio-tungstenite",

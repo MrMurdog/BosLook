@@ -6,7 +6,7 @@ use crate::telegram::{Decoded, Kind};
 use serde::Deserialize;
 
 /// Wie der Inhalt von POCSAG-Meldungen dargestellt wird.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, serde::Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
     /// Immer als Text

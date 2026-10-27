@@ -128,6 +128,7 @@
       </div></details>
       <details id="plugins" class="menu"><summary class="button">Plugins ▾</summary><div id="plugin-list"></div></details>
       <button id="descriptions-btn">Beschreibungen</button>
+      <button id="clients-btn">Clients</button>
       <button id="settings-btn" title="Einstellungen">⚙<span class="narrow"> Einstellungen</span></button>
       <button id="logout">Abmelden</button>
     </nav>
@@ -281,6 +282,7 @@ document.addEventListener("click", (e) => {
 });
 $("menu-btn").onclick = () => document.querySelector("header").classList.toggle("open");
 $("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
+$("clients-btn").onclick = () => window.open("/clients", "_blank");
 
 // Menü „Plugins“: Übersicht und je Plugin mit eigener Seite ein Eintrag
 async function pluginPages() {

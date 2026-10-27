@@ -122,6 +122,31 @@ pub fn match_fields() -> Vec<Field> {
     ]
 }
 
+/// Felder eines Eingangs; `device` ist die Eingabe für die Soundkarte
+fn input_fields(device: Input) -> Vec<Field> {
+    vec![
+        field("name", "Name", Input::Text).required(),
+        field("type", "Typ", Input::Select(vec!["soundcard", "rtl_fm", "stdin", "wav"])).required(),
+        field("device", "Soundkarte", device).when("type", &["soundcard"]).help("leer = Standardgerät"),
+        field("frequency", "Frequenz", Input::Text).required().when("type", &["rtl_fm"]).help("z. B. 173.255M"),
+        field("ppm", "Frequenzkorrektur (ppm)", Input::Number).default(0).when("type", &["rtl_fm"]),
+        field("gain", "Verstärkung", Input::Text).default("auto").when("type", &["rtl_fm"]).help("in dB, z. B. 38.6, oder auto"),
+        // Gleicher Schlüssel wie bei der Soundkarte, darum ohne Standardwert im Formular
+        field("device", "Stick", Input::Text).when("type", &["rtl_fm"]).help("Index oder Seriennummer, leer = 0"),
+        field("squelch", "Rauschsperre", Input::Number).default(0).when("type", &["rtl_fm"]).help("0 = aus (für Dekoder empfohlen)"),
+        field("program", "Programm", Input::Text).when("type", &["rtl_fm"]).help("Pfad zu rtl_fm, leer = aus dem PATH bzw. neben boslook"),
+        field("sample_rate", "Abtastrate (Hz)", Input::Number)
+            .required()
+            .when("type", &["stdin"])
+            .help("Rohe Samples (s16le, mono), z. B. von rtl_fm"),
+        field("path", "WAV-Datei", Input::Text).required().when("type", &["wav"]),
+        field("decoders", "Dekoder", Input::Choices(crate::decoder::ALL.to_vec())).default(json!(crate::decoder::ALL)),
+        field("pocsag", "POCSAG-Darstellung", Input::Select(vec!["alpha", "numeric", "auto"]))
+            .default("alpha")
+            .help("auto: Sub a als Ziffern, sonst als Text"),
+    ]
+}
+
 /// Titel und Text einer Benachrichtigung (Alarme und Desktop-Ereignisse)
 pub fn template_fields(title_help: &'static str, text_help: &'static str) -> Vec<Field> {
     vec![field("title", "Titel", Input::Text).help(title_help), field("text", "Text", Input::Multiline).help(text_help)]
@@ -193,20 +218,7 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
             title: "Eingänge",
             help: "",
             kind: SectionKind::List,
-            fields: vec![
-                name(),
-                field("type", "Typ", Input::Select(vec!["soundcard", "stdin", "wav"])).required(),
-                field("device", "Soundkarte", Input::Device).when("type", &["soundcard"]),
-                field("sample_rate", "Abtastrate (Hz)", Input::Number)
-                    .required()
-                    .when("type", &["stdin"])
-                    .help("Rohe Samples (s16le, mono), z. B. von rtl_fm"),
-                field("path", "WAV-Datei", Input::Text).required().when("type", &["wav"]),
-                field("decoders", "Dekoder", Input::Choices(crate::decoder::ALL.to_vec())).default(json!(crate::decoder::ALL)),
-                field("pocsag", "POCSAG-Darstellung", Input::Select(vec!["alpha", "numeric", "auto"]))
-                    .default("alpha")
-                    .help("auto: Sub a als Ziffern, sonst als Text"),
-            ],
+            fields: input_fields(Input::Device),
         },
         Section {
             key: "rewrite",
@@ -289,9 +301,17 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
         Section {
             key: "client",
             title: "Clients",
-            help: "BosLook-Clients, die Telegramme an diesen Server weiterleiten dürfen",
+            help: "BosLook-Clients, die Telegramme an diesen Server weiterleiten dürfen. Einrichten per Code auf der Seite „Clients“.",
             kind: SectionKind::List,
-            fields: vec![name(), field("token_hash", "Token", Input::Secret).required()],
+            fields: vec![
+                name(),
+                field("token_hash", "Token", Input::Secret).help("Leer lassen und auf der Seite „Clients“ einen Einrichtungscode erzeugen"),
+                field("remote", "Fernkonfiguration", Input::Bool)
+                    .default(false)
+                    .help("Der Client nimmt die Eingänge von hier statt seiner eigenen; Änderungen gelten sofort nach dem Speichern"),
+                // Soundkarten des Clients kennt der Server nicht, darum als Text
+                field("input", "Eingänge", Input::Group(input_fields(Input::Text))).help("Nur mit Fernkonfiguration"),
+            ],
         },
         Section {
             key: "forward",
@@ -667,6 +687,23 @@ pocsag = "auto"
         .unwrap();
         assert!(!text.contains("a.wav") && !text.contains("device"), "{text}");
         assert!(text.contains("sample_rate = 48000"), "{text}");
+    }
+
+    #[test]
+    fn client_with_remote_inputs() {
+        let text = roundtrip(|f| {
+            f["client"] = json!([{"name": "Pi", "token_hash": "", "remote": true, "input": [
+                {"name": "Funk", "type": "rtl_fm", "frequency": "173.255M", "ppm": "42", "gain": "auto", "device": "", "squelch": 0, "decoders": crate::decoder::ALL},
+                {"name": "Karte", "type": "soundcard", "device": "hw:1", "ppm": 0, "gain": "auto"},
+            ]}]);
+        })
+        .unwrap();
+        assert!(text.contains("[[client.input]]\nname = \"Funk\"\ntype = \"rtl_fm\"\nfrequency = \"173.255M\"\nppm = 42\n"), "{text}");
+        assert!(text.contains("[[client.input]]\nname = \"Karte\"\ntype = \"soundcard\"\ndevice = \"hw:1\"\n"), "{text}");
+        let config = crate::config::Config::parse(&text).unwrap();
+        let client = &config.clients[0];
+        assert!(client.remote && client.token_hash.is_empty());
+        assert!(matches!(&client.inputs[0].source, crate::config::Source::RtlFm { ppm: 42, device, gain, .. } if device == "0" && gain == "auto"));
     }
 
     #[test]

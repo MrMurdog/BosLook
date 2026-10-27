@@ -60,9 +60,30 @@ Die angezeigte ID als `device` beim Eingang mit `type = "soundcard"` eintragen (
 wird das Standardgerät verwendet). Wird die Soundkarte abgezogen, versucht BosLook alle
 5 Sekunden, sie wieder zu öffnen.
 
+### RTL-SDR-Stick (rtl_fm)
+
+Mit `type = "rtl_fm"` startet BosLook `rtl_fm` selbst und startet es neu, falls es sich beendet
+(z. B. Stick abgezogen):
+
+```toml
+[[input]]
+name = "Funk"
+type = "rtl_fm"
+frequency = "173.255M"
+ppm = 42                 # Frequenzkorrektur des Sticks
+gain = "auto"            # oder z. B. "38.6" (dB)
+# device = "0"           # Index oder Seriennummer des Sticks
+# squelch = 0            # Rauschsperre, 0 = aus (für Dekoder empfohlen)
+# program = "/usr/local/bin/rtl_fm"   # falls nicht im PATH
+```
+
+`rtl_fm` wird nicht mitgeliefert: unter Linux `apt install rtl-sdr`, unter Windows die
+Osmocom-Dateien (`rtl_fm.exe` mit DLLs) neben `boslook.exe` legen. Meldungen von `rtl_fm`
+erscheinen im Log von BosLook.
+
 ### stdin
 
-Live-Audio kann auch über stdin eingespeist werden (signed 16 Bit, mono, Abtastrate wie in der Konfiguration):
+Als Reserve kann Live-Audio auch über stdin eingespeist werden (signed 16 Bit, mono, Abtastrate wie in der Konfiguration):
 
 ```sh
 rtl_fm -f 173.255M -M fm -s 22050 - | boslook serve        # SDR-Stick
@@ -122,7 +143,8 @@ nach dem Alphabet. Die Reiter lassen sich mit der Maus verschieben, „Ansicht" 
 sortieren" stellt die alphabetische Reihenfolge wieder her. Neue Telegramme in anderen Reitern
 werden als Zahl am Reiter angezeigt. Unter „Ansicht" lassen sich Spalten ein- und ausblenden und
 mit ▲/▼ verschieben; Spalten lassen sich auch an der Überschrift verschieben und am rechten
-Rand breiter ziehen. „Spalten zurücksetzen" stellt den Standard wieder her. Reihenfolge, Breiten
+Rand breiter ziehen. „Spalten zurücksetzen" stellt den Standard wieder her. „Clients" zeigt die
+weiterleitenden Clients und erzeugt Einrichtungscodes (siehe unten). Reihenfolge, Breiten
 und der zuletzt gewählte Reiter werden im Browser gespeichert. Seiten von Plugins stehen im Menü
 „Plugins", die Einstellungen hinter ⚙. Auf schmalen Bildschirmen liegt das alles hinter ☰.
 
@@ -193,6 +215,33 @@ boslook warncell Leipzig       # Warncell-ID für die Konfiguration suchen
 Ein BosLook mit angeschlossenem Empfänger (Client) kann seine Telegramme an einen anderen
 BosLook (Server, z. B. auf einem vServer) weiterleiten. Die Verbindung läuft als WebSocket
 über den Webport des Servers, bei TLS also verschlüsselt.
+
+### Einrichten per Code
+
+1. Server: unter „Einstellungen" → „Clients" einen Client mit Namen anlegen und speichern.
+   Mit „Fernkonfiguration" werden seine Eingänge gleich dort eingestellt (siehe unten).
+2. Server: Seite „Clients" (Knopf in der Kopfzeile) → „Einrichtungscode". Die Adresse, unter
+   der der Client den Server erreicht, ist mit der Adresse im Browser vorbelegt.
+3. Client: `boslook setup <code> --service` – schreibt `boslook.toml` und richtet BosLook als
+   Dienst ein (Linux: systemd, mit `sudo`; Windows: Aufgabe beim Systemstart, als
+   Administrator). Ohne `--service` wird nur die Konfiguration geschrieben, dann
+   `boslook serve` starten.
+
+Im Code stecken Server-Adresse, Name, ein neues Token und bei `tls = "self-signed"` der
+Fingerabdruck des Server-Zertifikats; genau dieses Zertifikat wird dann akzeptiert. Der Code
+wird nur einmal angezeigt; ein neuer Code macht das alte Token ungültig.
+
+### Fernkonfiguration
+
+Ist beim Client „Fernkonfiguration" eingeschaltet, stellt man seine Eingänge (Soundkarte,
+`rtl_fm`, …) auf dem Server ein. Der Server schickt sie beim Verbinden und nach jedem
+Speichern; der Client hebt sie in `boslook.remote.toml` auf (läuft also auch, wenn der Server
+beim Start nicht erreichbar ist) und startet neu, sobald alle gepufferten Telegramme
+übertragen sind. Eigene `[[input]]`-Abschnitte des Clients gelten nur ohne Fernkonfiguration.
+Die Seite „Clients" zeigt Verbindung, Version und den Zustand der Eingänge jedes Clients.
+Das braucht auf beiden Seiten mindestens Version 0.2.2; ältere Clients leiten weiter wie bisher.
+
+### Von Hand einrichten
 
 1. Token ausdenken (lang und zufällig).
 2. Server: unter „Einstellungen" → „Clients" Name und Token eintragen (oder in der Datei

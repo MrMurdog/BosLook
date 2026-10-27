@@ -113,7 +113,7 @@ async fn session(
     send: &impl Fn(FromClient),
     cmd_rx: &mut mpsc::UnboundedReceiver<ToClient>,
 ) -> Result<()> {
-    let tls = boslook::forward::tls_config(config.cert.as_deref())?;
+    let tls = boslook::forward::tls_config(config.cert.as_deref(), None)?;
     let http = reqwest::Client::builder().tls_backend_preconfigured(tls.clone()).timeout(Duration::from_secs(20)).build()?;
     let base = config.url.trim_end_matches('/').to_string();
 

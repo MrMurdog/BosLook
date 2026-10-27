@@ -35,14 +35,18 @@ pub fn read_wav(path: &str, mut f: impl FnMut(&[f32], f64)) -> Result<u32> {
 }
 
 /// Liest rohe Samples (signed 16 Bit little endian, mono) von stdin, bis der Strom endet.
-pub fn read_stdin_raw(sample_rate: u32, mut f: impl FnMut(&[f32], f64)) -> Result<()> {
-    let mut stdin = std::io::stdin().lock();
+pub fn read_stdin_raw(sample_rate: u32, f: impl FnMut(&[f32], f64)) -> Result<()> {
+    read_raw(std::io::stdin().lock(), sample_rate, f).context("stdin lesen")
+}
+
+/// Liest rohe Samples (signed 16 Bit little endian, mono), bis der Strom endet.
+pub fn read_raw(mut stdin: impl Read, sample_rate: u32, mut f: impl FnMut(&[f32], f64)) -> Result<()> {
     let mut buf = vec![0u8; CHUNK * 2];
     let mut block = Vec::with_capacity(CHUNK);
     let mut total = 0usize;
     let mut pending: Option<u8> = None;
     loop {
-        let n = stdin.read(&mut buf).context("stdin lesen")?;
+        let n = stdin.read(&mut buf)?;
         if n == 0 {
             return Ok(());
         }

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clients – BosLook</title>
+<link rel="icon" href="/icon.svg">
+<style>
+  :root { --bg: #f5f6f8; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e2e5ea; --accent: #005795; --danger: #dd3127; --ok: #2e7d32; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1b1f27; --text: #e6e8ec; --muted: #8b93a5; --line: #2b313c; --accent: #4a9be0; --danger: #ef5350; --ok: #66bb6a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 8px 0 0; font-size: 18px; } header h1 span { color: var(--accent); }
+  button, .button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; }
+  input, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  main { padding: 16px; max-width: 60rem; }
+  .help { color: var(--muted); margin: 0 0 14px; }
+  label.server { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 14px; }
+  label.server input { flex: 1; min-width: 16rem; }
+  .client { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+  .client h2 { margin: 0; font-size: 16px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .client h2 small { color: var(--muted); font-weight: normal; font-size: 13px; }
+  .state { font-size: 13px; font-weight: 600; }
+  .state.on { color: var(--ok); } .state.off { color: var(--muted); } .state.err { color: var(--danger); }
+  .client p { margin: 6px 0; }
+  .client ul { margin: 6px 0; padding-left: 1.2em; }
+  .client li.err { color: var(--danger); }
+  .code { margin-top: 10px; }
+  .code textarea { width: 100%; font: 12px/1.4 ui-monospace, monospace; word-break: break-all; }
+  .code .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+  code { font: 12px ui-monospace, monospace; }
+  .errors { color: var(--danger); white-space: pre-wrap; }
+  #login { max-width: 28rem; margin: 15vh auto; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <p>Bitte zuerst in BosLook anmelden.</p>
+  <a class="button" href="/">Zur Anmeldung</a>
+</div>
+<div id="app">
+  <header>
+    <h1>Bos<span>Look</span> · Clients</h1>
+    <button id="reload">Aktualisieren</button>
+  </header>
+  <main>
+    <p class="help">Clients leiten ihre Telegramme an diesen Server weiter. Angelegt werden sie unter „Einstellungen“ im Abschnitt „Clients“, dort auch die Fernkonfiguration ihrer Eingänge. Hier gibt es den Einrichtungscode: auf dem Client <code>boslook setup &lt;code&gt; --service</code> ausführen.</p>
+    <label class="server">Adresse, unter der Clients diesen Server erreichen: <input id="server" spellcheck="false"></label>
+    <div id="errors" class="errors"></div>
+    <div id="list"></div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+$("server").value = location.origin;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+
+const time = (t) => new Date(t).toLocaleString("de-DE");
+
+function client(c, code) {
+  const box = el("div", "client");
+  box.dataset.name = c.name;
+  const h = el("h2", "", c.name);
+  const s = c.state;
+  if (s.version) h.append(el("small", "", "Version " + s.version));
+  const [cls, text] = s.connected ? ["on", "verbunden seit " + time(s.since)]
+    : s.since ? ["err", "getrennt seit " + time(s.since)]
+    : c.token ? ["off", "noch nicht verbunden"] : ["off", "noch nicht eingerichtet"];
+  h.append(el("span", "state " + cls, text));
+  box.append(h);
+  box.append(el("p", "", c.remote
+    ? `Fernkonfiguration: ${c.inputs.length ? c.inputs.join(", ") : "keine Eingänge"}`
+    : "Eigene Eingänge des Clients (keine Fernkonfiguration)"));
+  if (s.connected && !s.version) box.append(el("p", "help", "Ältere Version: kennt weder Fernkonfiguration noch Zustandsmeldungen."));
+  const inputs = Object.entries(s.inputs);
+  if (inputs.length) {
+    const list = el("ul");
+    for (const [name, i] of inputs) list.append(el("li", i.ok ? "" : "err", `${name}: ${i.message}`));
+    box.append(list);
+  }
+  const button = el("button", "", "Einrichtungscode");
+  button.onclick = () => setup(c, box);
+  const row = el("p"); row.append(button);
+  box.append(row);
+  if (code) box.append(code);
+  return box;
+}
+
+async function setup(c, box) {
+  if (c.token && !confirm(`Neuen Einrichtungscode für „${c.name}“ erzeugen? Das bisherige Token wird ungültig, der Client muss neu eingerichtet werden.`)) return;
+  const res = await fetch("/api/clients/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: c.name, server: $("server").value }) });
+  if (res.status === 401) return showLogin();
+  if (!res.ok) { $("errors").textContent = await res.text(); return; }
+  $("errors").textContent = "";
+  const { code } = await res.json();
+  const div = el("div", "code");
+  div.append(el("p", "", "Einrichtungscode (wird nur jetzt angezeigt):"));
+  const area = el("textarea"); area.rows = 3; area.readOnly = true; area.value = code;
+  const copy = el("button", "", "Kopieren");
+  copy.onclick = async () => {
+    area.select();
+    try { await navigator.clipboard.writeText(code); } catch { document.execCommand("copy"); }
+    copy.textContent = "Kopiert";
+  };
+  const command = el("code", "", `boslook setup ${code} --service`);
+  const line = el("div", "row"); line.append(copy, el("span", "help", "Auf dem Client (Linux mit sudo):"), command);
+  div.append(area, line);
+  box.querySelector(".code")?.remove();
+  box.append(div);
+  load();
+}
+
+function showLogin() { $("app").hidden = true; $("login").hidden = false; }
+
+async function load() {
+  const res = await fetch("/api/clients");
+  if (res.status === 401) return showLogin();
+  if (!res.ok) { $("errors").textContent = await res.text(); return; }
+  const list = await res.json();
+  // Angezeigte Einrichtungscodes beim Aktualisieren behalten
+  const codes = new Map([...document.querySelectorAll(".client")].map((b) => [b.dataset.name, b.querySelector(".code")]));
+  $("list").replaceChildren(...list.map((c) => client(c, codes.get(c.name))));
+  if (!list.length) $("list").append(el("p", "help", "Noch keine Clients angelegt."));
+}
+
+$("reload").onclick = load;
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

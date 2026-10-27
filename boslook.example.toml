@@ -30,11 +30,19 @@ interval = 300            # Abfrage alle 300 Sekunden
 name = "admin"
 password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
 
-# Clients, die Telegramme an diesen Server weiterleiten (siehe boslook-client.example.toml).
-# Token frei wählen (lang und zufällig), Hash erzeugen mit: boslook hash-password
+# Clients, die Telegramme an diesen Server weiterleiten. Am einfachsten nur den Namen
+# eintragen und auf der Seite "Clients" einen Einrichtungscode erzeugen (boslook setup <code>).
+# Von Hand: Token frei wählen (lang und zufällig), Hash erzeugen mit: boslook hash-password
 [[client]]
 name = "Zuhause"
 token_hash = "$argon2id$v=19$m=19456,t=2,p=1$ERSETZEN$ERSETZEN"
+# Fernkonfiguration: Der Client nimmt diese Eingänge statt seiner eigenen
+# remote = true
+# [[client.input]]
+# name = "Funk"
+# type = "rtl_fm"
+# frequency = "173.255M"
+# ppm = 42
 
 # Eingänge. Dekoder: pocsag512, pocsag1200, fms, zvei (Standard: alle)
 # pocsag: Darstellung der POCSAG-Meldungen: "alpha" (Standard, immer Text),
@@ -49,6 +57,16 @@ path = "test-wav/Leipsch_viel_cutted.wav"
 # name = "Funkscanner"
 # type = "soundcard"
 # device = "alsa:plughw:CARD=Device,DEV=0"
+
+# RTL-SDR-Stick: BosLook startet rtl_fm selbst (Linux: apt install rtl-sdr)
+# [[input]]
+# name = "Funk"
+# type = "rtl_fm"
+# frequency = "173.255M"
+# ppm = 0                 # Frequenzkorrektur des Sticks
+# gain = "auto"           # oder z. B. "38.6" (dB)
+# device = "0"            # Index oder Seriennummer des Sticks
+# squelch = 0             # 0 = aus (für Dekoder empfohlen)
 
 # Live-Audio von stdin (signed 16 Bit, mono), z. B.:
 #   rtl_fm -f 173.255M -M fm -s 22050 - | boslook serve

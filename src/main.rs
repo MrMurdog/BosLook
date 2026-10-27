@@ -37,6 +37,19 @@ enum Command {
     Devices,
     /// Passwort-Hash für die Konfiguration erzeugen (Passwort wird von stdin gelesen)
     HashPassword,
+    /// Client mit einem Einrichtungscode aus der Weboberfläche des Servers einrichten
+    Setup {
+        /// Einrichtungscode (beginnt mit boslook1:)
+        code: String,
+        #[arg(short, long, default_value = "boslook.toml")]
+        config: String,
+        /// Als Dienst einrichten und starten (Linux: systemd, als root; Windows: Aufgabe beim Systemstart)
+        #[arg(long)]
+        service: bool,
+        /// Vorhandene Konfiguration überschreiben
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -47,6 +60,7 @@ fn main() -> Result<()> {
         Command::Warncell { name } => weather::search(&name),
         Command::Devices => input::list_devices(),
         Command::HashPassword => hash_password(),
+        Command::Setup { code, config, service, force } => boslook::setup::run(&code, &config, service, force),
     }
 }
 
