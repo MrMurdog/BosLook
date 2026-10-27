@@ -230,7 +230,7 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
         Section {
             key: "filter",
             title: "Filter",
-            help: "Passt ein Filter mit „Ausschließen“, wird das Telegramm verworfen. Gibt es andere Filter, muss einer davon passen.",
+            help: "Ein Filter mit Kanal gilt nur für diesen Kanal, einer ohne für alle. Passt ein Filter mit „Ausschließen“, wird das Telegramm verworfen. Gelten für den Kanal andere Filter, muss einer davon passen.",
             kind: SectionKind::List,
             fields: [vec![name()], match_fields(), vec![field("exclude", "Ausschließen", Input::Bool).default(false)]].into_iter().flatten().collect(),
         },

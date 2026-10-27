@@ -20,8 +20,8 @@ Plugins erweitern den Server um
 - **Bearbeiten**: Telegramme vor der Verarbeitung ändern oder verwerfen
 - **Benachrichtigungsarten**: neue Dienste neben Telegram, Pushover und E-Mail
 - **Eingänge**: Telegramme aus anderen Quellen liefern
-- **Eigene Seiten**: z. B. Statistiken oder Einstellungen, erreichbar über einen Knopf mit dem
-  Namen des Plugins in der Weboberfläche und der Desktop-App (öffnet den Browser)
+- **Eigene Seiten**: z. B. Statistiken oder Einstellungen, erreichbar über einen Eintrag mit dem
+  Namen des Plugins im Menü „Plugins" der Weboberfläche und der Desktop-App (öffnet den Browser)
 
 ### Installieren
 
@@ -67,7 +67,7 @@ url = "https://example.org/alarm"
 
 ### Überwachen
 
-Die Seite **„Plugins"** (Knopf in der Weboberfläche und in der Desktop-App) zeigt alle
+Die Seite **„Plugins"** („Plugins" → „Übersicht" in der Weboberfläche und in der Desktop-App) zeigt alle
 installierten Plugins mit Version, Fähigkeiten, Zustand und den letzten Logzeilen. Dort stehen
 auch Fehler in einer `plugin.toml`. Das Log erscheint außerdem in der Ausgabe von BosLook als
 `Plugin '<name>': …`.

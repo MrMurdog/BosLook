@@ -206,7 +206,7 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> impl IntoRes
 
 async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     match app.session_user(&headers) {
-        Some(user) => Json(serde_json::json!({ "user": user })).into_response(),
+        Some(user) => Json(serde_json::json!({ "user": user, "version": env!("CARGO_PKG_VERSION") })).into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }

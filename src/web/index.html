@@ -19,8 +19,10 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  #plugin-pages { display: contents; }
   header h1 { margin: 0; font-size: 18px; } header h1 span { color: var(--accent); }
+  #version { color: var(--muted); font-size: 12px; }
+  #actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  #menu-btn, .narrow { display: none; }
   #status { margin-left: auto; color: var(--muted); font-size: 13px; }
   #status.on::before { content: "●"; color: #43a047; margin-right: 4px; }
   #status.off::before { content: "●"; color: var(--danger); margin-right: 4px; }
@@ -43,10 +45,25 @@
   td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.addr { font-family: ui-monospace, monospace; white-space: nowrap; }
   td.msg, td.text { word-break: break-word; }
-  #columns { position: relative; }
-  #columns summary { list-style: none; } #columns summary::-webkit-details-marker { display: none; }
-  #columns div { position: absolute; right: 0; z-index: 2; margin-top: 4px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px #0003; white-space: nowrap; }
-  #columns label { display: block; padding: 3px 0; }
+  th[draggable] { cursor: grab; }
+  .menu { position: relative; }
+  .menu summary { list-style: none; } .menu summary::-webkit-details-marker { display: none; }
+  .menu > div { position: absolute; right: 0; z-index: 2; min-width: 14rem; margin-top: 4px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px #0003; white-space: nowrap; }
+  .menu h2 { margin: 6px 0 4px; font-size: 11px; text-transform: uppercase; color: var(--muted); }
+  .menu .col { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
+  .menu .col label { flex: 1; }
+  .menu .col button { padding: 0 6px; }
+  .menu .col button:disabled { opacity: 0.3; cursor: default; }
+  .menu .entry { display: block; width: 100%; margin: 2px 0; padding: 4px 6px; border: none; text-align: left; }
+  .menu .entry:hover { background: var(--bg); }
+  /* Schmale Bildschirme: alles rechts vom Status hinter ☰ */
+  @media (max-width: 720px) {
+    #menu-btn, .narrow { display: inline; }
+    #actions { display: none; width: 100%; flex-direction: column; align-items: stretch; gap: 6px; text-align: left; }
+    #actions > button { text-align: left; }
+    header.open #actions { display: flex; }
+    .menu > div { position: static; box-shadow: none; }
+  }
   .kind { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; color: #fff; }
   .kind.pocsag { background: var(--pocsag); } .kind.fms { background: var(--fms); } .kind.zvei { background: var(--zvei); } .kind.wetter { background: var(--wetter); }
   tr.new { background: var(--new); transition: background 3s; }
@@ -98,13 +115,22 @@
 <div id="app" hidden>
   <header>
     <h1>Bos<span>Look</span></h1>
+    <span id="version"></span>
     <span id="status" class="off">getrennt</span>
-    <details id="columns"><summary class="button">Spalten</summary><div></div></details>
-    <button id="descriptions-btn">Beschreibungen</button>
-    <button id="plugins-btn">Plugins</button>
-    <span id="plugin-pages" hidden></span>
-    <button id="settings-btn">Einstellungen</button>
-    <button id="logout">Abmelden</button>
+    <button id="menu-btn" title="Menü">☰</button>
+    <nav id="actions">
+      <details id="view" class="menu"><summary class="button">Ansicht ▾</summary><div>
+        <h2>Spalten</h2>
+        <div id="columns"></div>
+        <button id="columns-reset" class="entry">Spalten zurücksetzen</button>
+        <h2>Reiter</h2>
+        <button id="tabs-sort" class="entry">Reiter A–Z sortieren</button>
+      </div></details>
+      <details id="plugins" class="menu"><summary class="button">Plugins ▾</summary><div id="plugin-list"></div></details>
+      <button id="descriptions-btn">Beschreibungen</button>
+      <button id="settings-btn" title="Einstellungen">⚙<span class="narrow"> Einstellungen</span></button>
+      <button id="logout">Abmelden</button>
+    </nav>
   </header>
   <main id="settings" hidden>
     <div class="bar">
@@ -163,9 +189,13 @@ const COLUMNS = [
   { key: "kurz", label: "Kurzbeschreibung", cls: "text", width: "10rem" },
   { key: "lang", label: "Langbeschreibung", cls: "text", width: "14rem" },
 ];
-// Welche Spalten sichtbar sind, gilt für alle Reiter in diesem Browser
+// Welche Spalten sichtbar sind und ihre Reihenfolge, gilt für alle Reiter in diesem Browser
 let hidden = load("boslook.hidden", []);
-const visible = () => COLUMNS.filter((c) => !hidden.includes(c.key));
+let order = load("boslook.order", []);
+// Spalten ohne gespeicherte Position (z. B. nach einem Update neue) kommen ans Ende
+const rank = (c) => { const i = order.indexOf(c.key); return i < 0 ? order.length + COLUMNS.indexOf(c) : i; };
+const ordered = () => [...COLUMNS].sort((a, b) => rank(a) - rank(b));
+const visible = () => ordered().filter((c) => !hidden.includes(c.key));
 
 function row(t, isNew) {
   const tr = document.createElement("tr");
@@ -193,6 +223,7 @@ function columns() {
     for (const c of visible()) {
       const th = document.createElement("th");
       th.textContent = c.label;
+      th.draggable = true; th.dataset.col = c.key;
       if (c.width) {
         th.style.width = widths[c.key] ? widths[c.key] + "px" : c.width;
         const grip = document.createElement("span");
@@ -206,36 +237,65 @@ function columns() {
   applyWidths();
 }
 
-const chooser = $("columns").querySelector("div");
-for (const c of COLUMNS) {
-  const box = document.createElement("input");
-  box.type = "checkbox"; box.checked = !hidden.includes(c.key);
-  box.onchange = () => {
-    hidden = COLUMNS.filter((x, i) => !chooser.querySelectorAll("input")[i].checked).map((x) => x.key);
-    save("boslook.hidden", hidden);
-    columns();
-  };
-  const label = document.createElement("label");
-  label.append(box, " " + c.label);
-  chooser.append(label);
+// Spalte `key` vor die Spalte `before` setzen (null = ans Ende)
+function moveColumn(key, before) {
+  const keys = ordered().map((c) => c.key).filter((k) => k !== key);
+  keys.splice(before ? keys.indexOf(before) : keys.length, 0, key);
+  order = keys;
+  save("boslook.order", order);
+  columns();
+  columnMenu();
 }
-document.addEventListener("click", (e) => { if (!$("columns").contains(e.target)) $("columns").open = false; });
-$("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
-$("plugins-btn").onclick = () => window.open("/plugins", "_blank");
 
-// Ein Knopf je Plugin mit eigener Seite
+// Spalten im Menü „Ansicht“: ein-/ausblenden, mit ▲/▼ verschieben (auch per Touch)
+function columnMenu() {
+  const list = ordered();
+  $("columns").replaceChildren(...list.map((c, i) => {
+    const box = el("input"); box.type = "checkbox"; box.checked = !hidden.includes(c.key);
+    box.onchange = () => {
+      hidden = box.checked ? hidden.filter((k) => k !== c.key) : [...hidden, c.key];
+      save("boslook.hidden", hidden);
+      columns();
+    };
+    const label = el("label"); label.append(box, " " + c.label);
+    const up = el("button", "", "▲"); up.title = "Nach vorn"; up.disabled = i === 0;
+    up.onclick = () => moveColumn(c.key, list[i - 1].key);
+    const down = el("button", "", "▼"); down.title = "Nach hinten"; down.disabled = i === list.length - 1;
+    down.onclick = () => moveColumn(c.key, list[i + 2]?.key ?? null);
+    const line = el("div", "col"); line.append(label, up, down);
+    return line;
+  }));
+}
+columnMenu();
+$("columns-reset").onclick = () => {
+  hidden = []; order = [];
+  for (const k of Object.keys(widths)) delete widths[k];
+  save("boslook.hidden", []); save("boslook.order", []); save("boslook.widths", {});
+  columns();
+  columnMenu();
+};
+
+// Offene Menüs schließen sich beim Klick daneben
+document.addEventListener("click", (e) => {
+  for (const m of document.querySelectorAll(".menu")) if (!m.contains(e.target)) m.open = false;
+});
+$("menu-btn").onclick = () => document.querySelector("header").classList.toggle("open");
+$("descriptions-btn").onclick = () => window.open("/beschreibungen", "_blank");
+
+// Menü „Plugins“: Übersicht und je Plugin mit eigener Seite ein Eintrag
 async function pluginPages() {
+  const entry = (text, title, url) => {
+    const b = el("button", "entry", text);
+    b.title = title;
+    b.onclick = () => { $("plugins").open = false; window.open(url, "_blank"); };
+    return b;
+  };
+  const overview = entry("Übersicht", "Alle installierten Plugins", "/plugins");
+  $("plugin-list").replaceChildren(overview);
   const res = await fetch("/api/plugins");
   if (!res.ok) return;
   const pages = (await res.json()).plugins.filter((p) => p.page);
-  $("plugin-pages").replaceChildren(...pages.map((p) => {
-    const b = document.createElement("button");
-    b.textContent = p.name;
-    b.title = p.description;
-    b.onclick = () => window.open(`/plugins/${p.name}/`, "_blank");
-    return b;
-  }));
-  $("plugin-pages").hidden = !pages.length;
+  $("plugin-list").append(...pages.map((p) => entry(p.name, p.description, `/plugins/${p.name}/`)));
 }
 
 function panel(source) {
@@ -260,13 +320,7 @@ function panel(source) {
   $("empty").hidden = true;
   $("panels").append(el);
   columns();
-  // Gespeicherte Reihenfolge beachten, unbekannte Quellen hinten anhängen
-  const order = load("boslook.tabs", []);
-  const pos = order.indexOf(source);
-  const next = pos < 0 ? null : [...$("tabs").children].find((t) => {
-    const i = order.indexOf(t.dataset.source);
-    return i < 0 || i > pos;
-  });
+  const next = [...$("tabs").children].find((t) => tabOrder(source, t.dataset.source) < 0);
   $("tabs").insertBefore(tab, next ?? null);
   if (!active || source === wanted) select(source);
   return p;
@@ -303,6 +357,38 @@ $("tabs").ondragover = (e) => {
 };
 $("tabs").ondrop = (e) => e.preventDefault();
 
+// Per Ziehen gespeicherte Reihenfolge zuerst, Quellen ohne gespeicherte Position alphabetisch dahinter
+function tabOrder(a, b) {
+  const saved = load("boslook.tabs", []);
+  const pos = (s) => { const i = saved.indexOf(s); return i < 0 ? Infinity : i; };
+  return pos(a) - pos(b) || a.localeCompare(b, "de", { numeric: true });
+}
+$("tabs-sort").onclick = () => {
+  save("boslook.tabs", []);
+  $("tabs").append(...[...$("tabs").children].sort((a, b) => tabOrder(a.dataset.source, b.dataset.source)));
+};
+
+// Spalten per Ziehen der Überschrift umsortieren (nicht beim Ziehen der Breite am Rand)
+let dragCol = null, resizing = false;
+$("panels").ondragstart = (e) => {
+  const th = e.target.closest?.("th[draggable]");
+  if (!th) return;
+  if (resizing) return e.preventDefault();
+  dragCol = th.dataset.col;
+  e.dataTransfer.setData("text/plain", dragCol);
+};
+$("panels").ondragend = () => { dragCol = null; };
+$("panels").ondragover = (e) => { if (dragCol && e.target.closest("th")) e.preventDefault(); };
+$("panels").ondrop = (e) => {
+  const th = e.target.closest("th");
+  if (!dragCol || !th || th.dataset.col === dragCol) return;
+  e.preventDefault();
+  const box = th.getBoundingClientRect();
+  const keys = ordered().map((c) => c.key);
+  const before = e.clientX < box.left + box.width / 2 ? th.dataset.col : keys[keys.indexOf(th.dataset.col) + 1] ?? null;
+  if (before !== dragCol) moveColumn(dragCol, before);
+};
+
 // Spaltenbreiten per Ziehen am rechten Rand der Überschrift; gelten für alle Reiter in diesem Browser
 const widths = load("boslook.widths", {});
 // Bis 0.1.4 waren die Breiten nach Spaltennummer gespeichert
@@ -322,6 +408,7 @@ $("panels").onpointerdown = (e) => {
   const grip = e.target.closest(".grip");
   if (!grip) return;
   e.preventDefault();
+  resizing = true;
   grip.setPointerCapture(e.pointerId);
   const offset = e.clientX - grip.parentElement.offsetWidth;
   grip.onpointermove = (e) => {
@@ -330,6 +417,7 @@ $("panels").onpointerdown = (e) => {
   };
   grip.onpointerup = () => {
     grip.onpointermove = null;
+    resizing = false;
     save("boslook.widths", widths);
   };
 };
@@ -376,6 +464,7 @@ async function showApp() {
   const res = await fetch("/api/sources");
   if (res.status === 401) return showLogin();
   const sources = await res.json();
+  fetch("/api/me").then((r) => r.json()).then((m) => { $("version").textContent = m.version; });
   pluginPages();
   for (const s of sources) panel(s);
   await Promise.all(sources.map(loadOlder));

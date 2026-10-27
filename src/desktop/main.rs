@@ -69,7 +69,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             let hidden = cc.storage.and_then(|s| eframe::get_value(s, HIDDEN)).unwrap_or_default();
-            Ok(Box::new(App::new(cli.config, hidden, &cc.egui_ctx)))
+            let order = cc.storage.and_then(|s| eframe::get_value(s, ORDER)).unwrap_or_default();
+            Ok(Box::new(App::new(cli.config, hidden, order, &cc.egui_ctx)))
         }),
     )
 }
@@ -103,6 +104,8 @@ struct App {
     plugin_pages: Vec<String>,
     /// Ausgeblendete Spalten (Schlüssel aus `COLUMNS`)
     hidden: Vec<String>,
+    /// Reihenfolge der Spalten (Schlüssel aus `COLUMNS`, leer = Standard)
+    order: Vec<String>,
     tray: Option<tray_icon::TrayIcon>,
     tray_rx: mpsc::Receiver<TrayAction>,
     quit: bool,
@@ -110,6 +113,8 @@ struct App {
 
 /// Schlüssel der ausgeblendeten Spalten im gespeicherten Zustand
 const HIDDEN: &str = "hidden_columns";
+/// Schlüssel der Spaltenreihenfolge im gespeicherten Zustand
+const ORDER: &str = "column_order";
 
 enum TrayAction {
     Show,
@@ -117,7 +122,7 @@ enum TrayAction {
 }
 
 impl App {
-    fn new(config_path: String, hidden: Vec<String>, ctx: &egui::Context) -> App {
+    fn new(config_path: String, hidden: Vec<String>, order: Vec<String>, ctx: &egui::Context) -> App {
         let (tx, rx) = mpsc::channel();
         let (tray, tray_rx) = tray(ctx);
         let mut app = App {
@@ -138,6 +143,7 @@ impl App {
             server_url: None,
             plugin_pages: Vec::new(),
             hidden,
+            order,
             tray,
             tray_rx,
             quit: false,
@@ -208,6 +214,7 @@ impl App {
                         self.rows.entry(s.clone()).or_default();
                     }
                     self.sources = sources;
+                    sort_sources(&mut self.sources);
                     if self.active.as_ref().is_none_or(|a| !self.sources.contains(a)) {
                         self.active = self.sources.first().cloned();
                     }
@@ -215,6 +222,7 @@ impl App {
                 FromClient::Telegram(t) => {
                     if !self.sources.contains(&t.source) {
                         self.sources.push(t.source.clone());
+                        sort_sources(&mut self.sources);
                     }
                     self.active.get_or_insert_with(|| t.source.clone());
                     if self.active.as_ref() != Some(&t.source) {
@@ -275,7 +283,7 @@ impl App {
         ui.separator();
         // Spaltenbreiten lassen sich mit der Maus ziehen und bleiben über Neustarts erhalten
         // (je Auswahl an Spalten)
-        let columns: Vec<_> = COLUMNS.iter().filter(|c| !self.hidden.iter().any(|h| h == c.0)).collect();
+        let columns: Vec<_> = self.ordered().into_iter().filter(|c| !self.hidden.iter().any(|h| h == c.0)).collect();
         let line = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
         // Werden die Spalten breiter als das Fenster, lässt sich waagerecht scrollen
         egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -337,6 +345,47 @@ impl App {
                     });
                 });
         });
+    }
+
+    /// Spalten in der eingestellten Reihenfolge; ohne gespeicherte Position (z. B. nach einem
+    /// Update neue) ans Ende
+    fn ordered(&self) -> Vec<&'static (&'static str, &'static str, Option<f32>)> {
+        let mut columns: Vec<_> = COLUMNS.iter().collect();
+        columns.sort_by_key(|c| self.order.iter().position(|k| k == c.0).unwrap_or(usize::MAX));
+        columns
+    }
+
+    /// Menü „Ansicht“: Spalten ein-/ausblenden und verschieben
+    fn view_menu(&mut self, ui: &mut egui::Ui) {
+        let columns = self.ordered();
+        let mut swap = None;
+        for (i, (key, label, _)) in columns.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut on = !self.hidden.iter().any(|h| h == key);
+                if ui.checkbox(&mut on, *label).changed() {
+                    self.hidden.retain(|h| h != key);
+                    if !on {
+                        self.hidden.push(key.to_string());
+                    }
+                }
+                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).on_hover_text("Nach vorn").clicked() {
+                    swap = Some(i - 1);
+                }
+                if ui.add_enabled(i + 1 < columns.len(), egui::Button::new("▼").small()).on_hover_text("Nach hinten").clicked() {
+                    swap = Some(i);
+                }
+            });
+        }
+        if let Some(i) = swap {
+            let mut keys: Vec<String> = columns.iter().map(|c| c.0.to_string()).collect();
+            keys.swap(i, i + 1);
+            self.order = keys;
+        }
+        ui.separator();
+        if ui.button("Spalten zurücksetzen").clicked() {
+            self.hidden.clear();
+            self.order.clear();
+        }
     }
 
     fn desktop_settings(&mut self, ui: &mut egui::Ui) {
@@ -420,6 +469,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, HIDDEN, &self.hidden);
+        eframe::set_value(storage, ORDER, &self.order);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -429,6 +479,7 @@ impl eframe::App for App {
                 // Blau des Logos, im dunklen Design heller für besseren Kontrast
                 let blue = if ui.visuals().dark_mode { Color32::from_rgb(0x4a, 0x9b, 0xe0) } else { Color32::from_rgb(0x00, 0x57, 0x95) };
                 ui.heading(RichText::new("Look").strong().color(blue));
+                ui.weak(env!("CARGO_PKG_VERSION"));
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Telegrams, "Telegramme");
                 ui.selectable_value(&mut self.view, View::Desktop, "Einstellungen");
@@ -437,32 +488,23 @@ impl eframe::App for App {
                 if ui.button("Beschreibungen").clicked() {
                     self.descriptions.show(ui.ctx());
                 }
-                if let Some(url) = &self.server_url
-                    && ui.button("Plugins").on_hover_text("Öffnet die Seite im Browser").clicked()
-                {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins")));
-                }
-                if let Some(url) = &self.server_url {
-                    for name in &self.plugin_pages {
-                        if ui.button(name).on_hover_text("Seite des Plugins im Browser").clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins/{name}/")));
+                // Seiten der Plugins gehen im Browser auf
+                if let Some(url) = self.server_url.clone() {
+                    ui.menu_button("Plugins ▾", |ui| {
+                        if ui.button("Übersicht").on_hover_text("Alle installierten Plugins").clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins")));
                         }
-                    }
+                        for name in &self.plugin_pages {
+                            if ui.button(name).on_hover_text("Seite des Plugins").clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{url}/plugins/{name}/")));
+                            }
+                        }
+                    });
                 }
                 if self.view == View::Telegrams {
                     // Offen lassen, damit mehrere Spalten auf einmal umgeschaltet werden können
                     let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                    egui::containers::menu::MenuButton::new("Spalten").config(config).ui(ui, |ui| {
-                        for (key, label, _) in COLUMNS {
-                            let mut on = !self.hidden.iter().any(|h| h == key);
-                            if ui.checkbox(&mut on, label).changed() {
-                                self.hidden.retain(|h| h != key);
-                                if !on {
-                                    self.hidden.push(key.to_string());
-                                }
-                            }
-                        }
-                    });
+                    egui::containers::menu::MenuButton::new("Ansicht ▾").config(config).ui(ui, |ui| self.view_menu(ui));
                 }
             });
         });
@@ -480,6 +522,11 @@ impl eframe::App for App {
             View::Server => self.server_settings(ui),
         });
     }
+}
+
+/// Reiter alphabetisch, ohne Rücksicht auf Groß-/Kleinschreibung
+fn sort_sources(sources: &mut [String]) {
+    sources.sort_by_key(|s| s.to_lowercase());
 }
 
 enum Action {

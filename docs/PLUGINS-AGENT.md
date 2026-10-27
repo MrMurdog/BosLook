@@ -119,7 +119,7 @@ speichern → Alarme (notify-Plugins) → observe-Plugins.
 ## Eigene Seite (Fähigkeit `web`)
 
 - Dateien in `plugins/<name>/web/`, Startseite `index.html`; erreichbar unter
-  `/plugins/<name>/` nur für angemeldete Benutzer. BosLook zeigt einen Knopf mit dem Namen.
+  `/plugins/<name>/` nur für angemeldete Benutzer. BosLook zeigt im Menü „Plugins" einen Eintrag mit dem Namen.
 - In der Seite relative Adressen benutzen: `fetch("api/stats")` → Nachricht `http` mit
   `path` `/stats`.
 - `<link rel="stylesheet" href="/plugin.css">` für das Aussehen von BosLook (hell/dunkel);

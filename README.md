@@ -84,8 +84,10 @@ Die Polarität des POCSAG-Signals wird automatisch erkannt.
 Filter arbeiten mit regulären Ausdrücken auf `address`, `sub` und `message`, optional
 eingeschränkt auf `kind` und mit `source` auf den Kanal (Name des Eingangs bzw. Reiter, z. B.
 `source = "^SDR$"`). Das Feld `source` gibt es genauso bei Bearbeitungsregeln, Alarmen und
-den Ereignissen der Desktop-App. Ein Telegramm wird verworfen, wenn ein Filter mit
-`exclude = true` passt. Gibt es Filter ohne `exclude`, muss mindestens einer davon passen.
+den Ereignissen der Desktop-App. Ein Filter mit `source` gilt nur für die passenden Kanäle,
+einer ohne `source` für alle. Ein Telegramm wird verworfen, wenn ein Filter mit
+`exclude = true` passt. Gelten für seinen Kanal Filter ohne `exclude`, muss mindestens einer
+davon passen; Kanäle ohne eigene Filter zeigen also alles.
 Beispiele stehen in `boslook.example.toml`.
 
 ### Bearbeitung
@@ -115,10 +117,14 @@ ein Testfeld, das die noch nicht gespeicherten Regeln auf ein eingetipptes Teleg
 
 ### Weboberfläche
 
-Jede Quelle hat einen eigenen Reiter. Die Reiter lassen sich mit der Maus verschieben; die
-Reihenfolge und der zuletzt gewählte Reiter werden im Browser gespeichert. Neue Telegramme
-in anderen Reitern werden als Zahl am Reiter angezeigt. Unter „Spalten" lassen sich Spalten
-ein- und ausblenden, die Breiten mit der Maus ziehen; beides merkt sich der Browser.
+Die Kopfzeile zeigt die Version von BosLook. Jede Quelle hat einen eigenen Reiter, sortiert
+nach dem Alphabet. Die Reiter lassen sich mit der Maus verschieben, „Ansicht" → „Reiter A–Z
+sortieren" stellt die alphabetische Reihenfolge wieder her. Neue Telegramme in anderen Reitern
+werden als Zahl am Reiter angezeigt. Unter „Ansicht" lassen sich Spalten ein- und ausblenden und
+mit ▲/▼ verschieben; Spalten lassen sich auch an der Überschrift verschieben und am rechten
+Rand breiter ziehen. „Spalten zurücksetzen" stellt den Standard wieder her. Reihenfolge, Breiten
+und der zuletzt gewählte Reiter werden im Browser gespeichert. Seiten von Plugins stehen im Menü
+„Plugins", die Einstellungen hinter ⚙. Auf schmalen Bildschirmen liegt das alles hinter ☰.
 
 Unter „Einstellungen" lässt sich die Konfiguration in einem Formular bearbeiten. Kommentare
 in der Datei bleiben dabei erhalten. Passwörter und Tokens für Benutzer und Clients werden im
@@ -203,8 +209,8 @@ Servers gelten auch für weitergeleitete Telegramme.
 
 Plugins sind eigenständige Programme in beliebiger Sprache, die den Server erweitern: Telegramme
 mitlesen oder vor der Verarbeitung ändern (z. B. entschlüsseln), neue Benachrichtigungsarten
-bereitstellen, selbst Telegramme liefern oder eigene Seiten anzeigen (Knopf mit dem Namen des
-Plugins). Ein Plugin ist ein Ordner unter `plugins/` neben
+bereitstellen, selbst Telegramme liefern oder eigene Seiten anzeigen (Eintrag mit dem Namen des
+Plugins im Menü „Plugins"). Ein Plugin ist ein Ordner unter `plugins/` neben
 der `boslook.toml`; eingeschaltet wird es unter „Einstellungen" im Abschnitt „Plugin: *Name*"
 (in der Datei `[plugin.<name>]`). Die Seite „Plugins" zeigt Zustand und Log aller Plugins.
 
@@ -248,9 +254,10 @@ Gleiche Telegramme lösen innerhalb von 60 Sekunden nur einmal aus (`repeat`). B
 Start wird `boslook-desktop.toml` angelegt und unter „Einstellungen" geöffnet. Unter
 „Server-Konfiguration" lässt sich die Konfiguration des Servers bearbeiten, beides als Formular
 wie in der Weboberfläche oder als Text. „Beschreibungen" öffnet den Editor für das
-Adressbuch in einem eigenen Fenster, „Plugins" und die Knöpfe von Plugins mit eigener Seite
-öffnen den Browser. Spalten lassen sich unter „Spalten" ein- und ausblenden
-und (wie in der Weboberfläche) mit der Maus breiter ziehen; beides bleibt gespeichert.
+Adressbuch in einem eigenen Fenster, die Einträge im Menü „Plugins" (Übersicht
+und Plugins mit eigener Seite) öffnen den Browser. Die Reiter sind alphabetisch sortiert. Spalten
+lassen sich unter „Ansicht" ein- und ausblenden und mit ▲/▼ verschieben und (wie in der
+Weboberfläche) mit der Maus breiter ziehen; alles bleibt gespeichert.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter
 Linux braucht das eine Arbeitsumgebung mit Infobereich (KDE, XFCE, GNOME mit

@@ -242,7 +242,7 @@ auch die `process`-Plugins.
 
 Ein Plugin mit `web` und einem Ordner `web/` hat eine eigene Seite unter `/plugins/<name>/`.
 BosLook liefert die Dateien aus `web/` selbst aus (`index.html` als Startseite), nur an
-angemeldete Benutzer. In der Weboberfläche erscheint ein Knopf mit dem Namen des Plugins; die
+angemeldete Benutzer. In der Weboberfläche erscheint im Menü „Plugins" ein Eintrag mit dem Namen des Plugins; die
 Desktop-App öffnet die Seite im Browser.
 
 Anfragen der Seite an `/plugins/<name>/api/…` (jede Methode) schickt BosLook an das Plugin:

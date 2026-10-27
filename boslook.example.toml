@@ -72,7 +72,8 @@ pocsag = "auto"
 # with = "Feuer $1"           # $1, $2 … = Klammern aus pattern
 
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
-# Gibt es Filter ohne "exclude", muss mindestens einer passen.
+# Ein Filter mit source gilt nur für diesen Kanal, einer ohne source für alle Kanäle.
+# Gelten für einen Kanal Filter ohne "exclude", muss mindestens einer passen.
 # Felder: kind (pocsag/fms/zvei/wetter), source (Kanal = Name des Eingangs), address, sub,
 # message und aus den Beschreibungen ort, kurz, lang
 [[filter]]

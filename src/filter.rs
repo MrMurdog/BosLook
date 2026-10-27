@@ -1,7 +1,8 @@
 //! Filter auf Basis regulärer Ausdrücke.
 //!
-//! Ein Telegramm wird verworfen, wenn ein Filter mit `exclude = true` passt.
-//! Gibt es Filter ohne `exclude`, muss mindestens einer davon passen.
+//! Ein Filter mit `source` gilt nur für die passenden Kanäle, einer ohne `source` für alle.
+//! Ein Telegramm wird verworfen, wenn ein Filter mit `exclude = true` passt. Gelten für seinen
+//! Kanal Filter ohne `exclude`, muss mindestens einer davon passen.
 
 use crate::telegram::{Kind, Telegram};
 use anyhow::{Context, Result};
@@ -59,10 +60,15 @@ impl Filter {
         })
     }
 
+    /// Gilt der Filter für den Kanal des Telegramms?
+    fn applies(&self, d: &Telegram) -> bool {
+        self.source.as_ref().is_none_or(|re| re.is_match(&d.source))
+    }
+
     pub fn matches(&self, d: &Telegram) -> bool {
         let field = |re: &Option<Regex>, value: &str| re.as_ref().is_none_or(|re| re.is_match(value));
         self.kind.is_none_or(|k| k == d.kind)
-            && field(&self.source, &d.source)
+            && self.applies(d)
             && field(&self.address, &d.address)
             && field(&self.sub, &d.sub)
             && field(&self.message, &d.message)
@@ -83,7 +89,7 @@ impl Filters {
         if self.0.iter().any(|f| f.exclude && f.matches(d)) {
             return false;
         }
-        let mut includes = self.0.iter().filter(|f| !f.exclude).peekable();
+        let mut includes = self.0.iter().filter(|f| !f.exclude && f.applies(d)).peekable();
         includes.peek().is_none() || includes.any(|f| f.matches(d))
     }
 }
@@ -147,11 +153,42 @@ mod tests {
 
     #[test]
     fn source_field() {
-        let f = filters("[[filter]]\nname = 'Nur SDR'\nsource = '^SDR$'");
+        let f = filters("[[filter]]\nname = 'Nur SDR'\nsource = '^SDR$'\naddress = '^18599'");
         let mut t = pocsag("1234567", "");
-        assert!(!f.allows(&t));
         t.source = "SDR".into();
+        assert!(!f.allows(&t));
+        t.address = "1859992".into();
         assert!(f.allows(&t));
+    }
+
+    #[test]
+    fn filters_apply_only_to_their_channel() {
+        let f = filters(
+            r#"
+            [[filter]]
+            name = "Kanal A: eigene Schleifen"
+            source = "^A$"
+            address = "^18599"
+
+            [[filter]]
+            name = "Kanal B: Probealarm ausblenden"
+            source = "^B$"
+            message = "(?i)probealarm"
+            exclude = true
+            "#,
+        );
+        let on = |source: &str, address: &str, message: &str| {
+            let mut t = pocsag(address, message);
+            t.source = source.into();
+            f.allows(&t)
+        };
+        assert!(on("A", "1859992", ""));
+        assert!(!on("A", "1234567", ""));
+        // Für B gilt kein Einschluss-Filter: alles außer dem Probealarm geht durch
+        assert!(on("B", "1234567", ""));
+        assert!(!on("B", "1234567", "Probealarm"));
+        // Ohne eigene Filter geht alles durch, auch der Probealarm
+        assert!(on("C", "1234567", "Probealarm"));
     }
 
     #[test]
