@@ -13,6 +13,8 @@ pub struct Form {
     devices: Vec<(String, String)>,
     /// Testfeld unter den Bearbeitungsregeln (nur Serverkonfiguration)
     pub test: RewriteTest,
+    /// Meldung, zu der der betroffene Abschnitt schon aufgeklappt wurde
+    revealed: String,
 }
 
 pub struct RewriteTest {
@@ -99,7 +101,7 @@ impl Form {
                 _ => {}
             }
         }
-        Form { schema, original: values.clone(), values, devices, test: RewriteTest::default() }
+        Form { schema, original: values.clone(), values, devices, test: RewriteTest::default(), revealed: String::new() }
     }
 
     /// Antwort von `/api/config/form`
@@ -117,12 +119,24 @@ impl Form {
         self.values != self.original
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        let Form { schema, values, devices, test, .. } = self;
+    /// `open`: aufgeklappte Abschnitte, alle anderen sind zu (bewusst nicht im gespeicherten
+    /// Zustand von egui, damit sie bei jedem Start zu sind). Nennt `msg` einen Abschnitt (Fehler
+    /// beim Speichern), geht er auf.
+    pub fn show(&mut self, ui: &mut egui::Ui, msg: &str, open: &mut std::collections::HashSet<String>) {
+        let Form { schema, values, devices, test, revealed, .. } = self;
+        let reveal = msg != revealed.as_str();
+        if reveal {
+            *revealed = msg.to_string();
+        }
         let all = values.clone();
         for section in schema.as_array().into_iter().flatten() {
             let key = str(&section["key"]);
-            egui::CollapsingHeader::new(RichText::new(str(&section["title"])).strong()).id_salt(key).default_open(true).show(ui, |ui| {
+            let title = str(&section["title"]);
+            if reveal && boslook::form::mentions(msg, title) {
+                open.insert(key.to_string());
+            }
+            let header = egui::CollapsingHeader::new(RichText::new(title).strong()).id_salt(key).open(Some(open.contains(key)));
+            let response = header.show(ui, |ui| {
                 help(ui, &section["help"]);
                 let fields = &section["fields"];
                 let ctx = Ctx { all: &all, devices };
@@ -171,6 +185,9 @@ impl Form {
                     }
                 }
             });
+            if response.header_response.clicked() && !open.remove(key) {
+                open.insert(key.to_string());
+            }
         }
     }
 }

@@ -70,7 +70,8 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             let hidden = cc.storage.and_then(|s| eframe::get_value(s, HIDDEN)).unwrap_or_default();
             let order = cc.storage.and_then(|s| eframe::get_value(s, ORDER)).unwrap_or_default();
-            Ok(Box::new(App::new(cli.config, hidden, order, &cc.egui_ctx)))
+            let hidden_tabs = cc.storage.and_then(|s| eframe::get_value(s, HIDDEN_TABS)).unwrap_or_default();
+            Ok(Box::new(App::new(cli.config, hidden, order, hidden_tabs, &cc.egui_ctx)))
         }),
     )
 }
@@ -106,6 +107,12 @@ struct App {
     hidden: Vec<String>,
     /// Reihenfolge der Spalten (Schlüssel aus `COLUMNS`, leer = Standard)
     order: Vec<String>,
+    /// Ausgeblendete Reiter
+    hidden_tabs: Vec<String>,
+    /// Reiter, dessen Telegramme nach Rückfrage gelöscht werden
+    delete_tab: Option<String>,
+    /// Meldung im Fenster über der Oberfläche (z. B. Fehler beim Löschen)
+    notice: Option<String>,
     /// Neuere Version der Desktop-App (sucht einmal am Tag)
     update: std::sync::Arc<std::sync::Mutex<Option<boslook::update::Release>>>,
     /// Fortschritt bzw. Fehler beim Einspielen
@@ -119,6 +126,8 @@ struct App {
 const HIDDEN: &str = "hidden_columns";
 /// Schlüssel der Spaltenreihenfolge im gespeicherten Zustand
 const ORDER: &str = "column_order";
+/// Schlüssel der ausgeblendeten Reiter im gespeicherten Zustand
+const HIDDEN_TABS: &str = "hidden_tabs";
 
 enum TrayAction {
     Show,
@@ -126,7 +135,7 @@ enum TrayAction {
 }
 
 impl App {
-    fn new(config_path: String, hidden: Vec<String>, order: Vec<String>, ctx: &egui::Context) -> App {
+    fn new(config_path: String, hidden: Vec<String>, order: Vec<String>, hidden_tabs: Vec<String>, ctx: &egui::Context) -> App {
         let (tx, rx) = mpsc::channel();
         let (tray, tray_rx) = tray(ctx);
         let mut app = App {
@@ -148,6 +157,9 @@ impl App {
             plugin_pages: Vec::new(),
             hidden,
             order,
+            hidden_tabs,
+            delete_tab: None,
+            notice: None,
             update: Default::default(),
             update_msg: Default::default(),
             tray,
@@ -249,6 +261,11 @@ impl App {
                     rows.push_front(t);
                     rows.truncate(MAX_ROWS);
                 }
+                FromClient::Updated(t) => {
+                    if let Some(row) = self.rows.get_mut(&t.source).and_then(|rows| rows.iter_mut().find(|r| r.id == t.id)) {
+                        *row = t;
+                    }
+                }
                 FromClient::ServerConfig(Ok(text)) => {
                     self.server_loading = false;
                     self.server.set_text(text);
@@ -275,6 +292,13 @@ impl App {
                         form.test.result(result);
                     }
                 }
+                FromClient::SourceDeleted(Ok(source)) => {
+                    self.sources.retain(|s| *s != source);
+                    self.rows.remove(&source);
+                    self.unread.remove(&source);
+                    self.hidden_tabs.retain(|s| *s != source);
+                }
+                FromClient::SourceDeleted(Err(e)) => self.notice = Some(format!("Nicht gelöscht: {e}")),
             }
         }
     }
@@ -284,8 +308,16 @@ impl App {
             ui.label("Noch keine Quellen vorhanden.");
             return;
         }
+        let visible: Vec<&String> = self.sources.iter().filter(|s| !self.hidden_tabs.contains(s)).collect();
+        if self.active.as_ref().is_none_or(|a| !visible.contains(&a)) {
+            self.active = visible.first().map(|s| s.to_string());
+        }
+        if visible.is_empty() {
+            ui.label("Alle Reiter sind ausgeblendet (Menü „Ansicht“).");
+            return;
+        }
         ui.horizontal_wrapped(|ui| {
-            for s in &self.sources {
+            for s in visible {
                 let mut label = s.clone();
                 if let Some(n) = self.unread.get(s).filter(|n| **n > 0) {
                     label = format!("{s} ({n})");
@@ -427,6 +459,57 @@ impl App {
             self.hidden.clear();
             self.order.clear();
         }
+        // Ausblenden gilt nur für diese App, Löschen entfernt die Telegramme auf dem Server
+        ui.separator();
+        ui.strong("Reiter");
+        for source in &self.sources {
+            ui.horizontal(|ui| {
+                let mut on = !self.hidden_tabs.contains(source);
+                if ui.checkbox(&mut on, source).changed() {
+                    self.hidden_tabs.retain(|s| s != source);
+                    if !on {
+                        self.hidden_tabs.push(source.clone());
+                    }
+                }
+                if ui.add(egui::Button::new("Löschen").small()).on_hover_text("Alle Telegramme dieses Reiters löschen").clicked() {
+                    self.delete_tab = Some(source.clone());
+                }
+            });
+        }
+    }
+
+    /// Rückfrage vor dem Löschen eines Reiters und Meldungen, jeweils als Fenster über allem
+    fn dialogs(&mut self, ui: &mut egui::Ui) {
+        if let Some(source) = self.delete_tab.clone() {
+            let mut answer = None;
+            egui::Modal::new(egui::Id::unique("delete-tab")).show(ui.ctx(), |ui| {
+                ui.label(format!("Alle Telegramme von „{source}“ endgültig löschen?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Löschen").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Abbrechen").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+            match answer {
+                Some(true) => {
+                    self.delete_tab = None;
+                    self.send(ToClient::DeleteSource(source));
+                }
+                Some(false) => self.delete_tab = None,
+                None => {}
+            }
+        }
+        if let Some(notice) = self.notice.clone() {
+            egui::Modal::new(egui::Id::unique("notice")).show(ui.ctx(), |ui| {
+                ui.label(notice);
+                if ui.button("OK").clicked() {
+                    self.notice = None;
+                }
+            });
+        }
     }
 
     fn desktop_settings(&mut self, ui: &mut egui::Ui) {
@@ -448,7 +531,7 @@ impl App {
         if !self.desktop.loaded() {
             self.load_desktop();
         }
-        self.desktop.show(ui);
+        self.desktop.show(ui, "desktop");
     }
 
     fn server_settings(&mut self, ui: &mut egui::Ui) {
@@ -467,7 +550,7 @@ impl App {
             self.server_loading = true;
             self.send(if self.server.text_mode { ToClient::LoadServerConfig } else { ToClient::LoadServerForm });
         }
-        self.server.show(ui);
+        self.server.show(ui, "server");
         if let Some(body) = self.server.form.as_mut().and_then(|f| f.test.request.take()) {
             self.send(ToClient::TestRewrite(body));
         }
@@ -511,6 +594,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, HIDDEN, &self.hidden);
         eframe::set_value(storage, ORDER, &self.order);
+        eframe::set_value(storage, HIDDEN_TABS, &self.hidden_tabs);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -563,6 +647,7 @@ impl eframe::App for App {
             View::Desktop => self.desktop_settings(ui),
             View::Server => self.server_settings(ui),
         });
+        self.dialogs(ui);
     }
 }
 
@@ -585,6 +670,8 @@ struct Editor {
     original: Option<String>,
     form: Option<form::Form>,
     msg: String,
+    /// Aufgeklappte Abschnitte des Formulars, bleiben beim Neuladen erhalten
+    open: std::collections::HashSet<String>,
 }
 
 impl Editor {
@@ -631,7 +718,8 @@ impl Editor {
         action
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) {
+    /// `id`: eigene Scrollposition je Editor
+    fn show(&mut self, ui: &mut egui::Ui, id: &str) {
         if !self.msg.is_empty() {
             ui.label(RichText::new(&self.msg).monospace());
         }
@@ -641,15 +729,15 @@ impl Editor {
         }
         match &mut self.form {
             Some(form) if !self.text_mode => {
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| form.show(ui));
+                egui::ScrollArea::vertical().id_salt(id).auto_shrink(false).show(ui, |ui| form.show(ui, &self.msg, &mut self.open));
             }
-            _ => editor(ui, &mut self.text),
+            _ => editor(ui, id, &mut self.text),
         }
     }
 }
 
-fn editor(ui: &mut egui::Ui, text: &mut String) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
+fn editor(ui: &mut egui::Ui, id: &str, text: &mut String) {
+    egui::ScrollArea::vertical().id_salt(id).show(ui, |ui| {
         ui.add(egui::TextEdit::multiline(text).code_editor().desired_width(f32::INFINITY).desired_rows(30));
     });
 }

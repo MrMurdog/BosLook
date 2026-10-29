@@ -3,7 +3,9 @@
 use crate::config::{Config, InputConfig, Source, Tls};
 use crate::db::Db;
 use crate::decoder::Bank;
+use crate::dedupe::{Dedupe, Verdict};
 use crate::filter::Filters;
+use crate::flexalarm::Flexalarm;
 use crate::notify::Notify;
 use crate::plugin::Plugins;
 use crate::rewrite::Rewrites;
@@ -50,6 +52,7 @@ pub fn validate(config: &Config, plugins: &Path) -> Result<()> {
     config.web.as_ref().map(|w| w.listen.parse::<SocketAddr>()).transpose().context("web.listen")?;
     Rewrites::new(&config.rewrites)?;
     Filters::new(&config.filters)?;
+    Flexalarm::new(&config.flexalarms)?;
     crate::notify::check(&config.alarms, &config.notifiers)?;
     crate::plugin::check(config, &crate::plugin::manifests(plugins).0)?;
     Ok(())
@@ -136,6 +139,8 @@ pub async fn run(config_path: &str) -> Result<()> {
     let addr: Option<SocketAddr> = config.web.as_ref().map(|w| w.listen.parse()).transpose().context("web.listen")?;
     let rewrites = Rewrites::new(&config.rewrites)?;
     let filters = Filters::new(&config.filters)?;
+    let mut flexalarm = Flexalarm::new(&config.flexalarms)?;
+    let mut dedupe = Dedupe::new(Duration::from_secs(if config.dedupe { config.dedupe_window } else { 0 }));
     let db = Db::open(&config.database).with_context(|| format!("Datenbank {}", config.database))?;
 
     let (tx, mut rx) = mpsc::channel::<Telegram>(1024);
@@ -196,29 +201,62 @@ pub async fn run(config_path: &str) -> Result<()> {
 
     let store = app.clone();
     tokio::spawn(async move {
-        while let Some(t) = rx.recv().await {
-            // Bearbeiten-Plugins zuerst, damit Regeln und Filter z. B. schon entschlüsselten Text sehen
-            let Some(mut t) = plugins.process(t).await else { continue };
-            // Erst nachschlagen und bearbeiten, dann filtern: Filter können auch Ort und Beschreibungen prüfen
-            {
-                let db = store.db.lock().unwrap();
-                if let Err(e) = rewrites.describe_and_apply(&db, &mut t) {
-                    eprintln!("Datenbank: {e:#}");
+        loop {
+            // Flexalarm hält Ton-RICs kurz zurück; laufen sie ab, gehen sie ohne Text weiter
+            let deadline = flexalarm.next_deadline();
+            let expired = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d.into()).await,
+                    None => std::future::pending().await,
                 }
-                if !filters.allows(&t) {
-                    continue;
+            };
+            let ready = tokio::select! {
+                t = rx.recv() => {
+                    let Some(t) = t else { break };
+                    // Bearbeiten-Plugins zuerst, damit Regeln und Filter z. B. schon entschlüsselten Text sehen
+                    let Some(t) = plugins.process(t).await else { continue };
+                    flexalarm.push(t, std::time::Instant::now())
                 }
-                match db.insert(&t) {
-                    Ok(id) => t.id = id,
-                    Err(e) => eprintln!("Datenbank: {e:#}"),
+                _ = expired => flexalarm.expire(std::time::Instant::now()),
+            };
+            for mut t in ready {
+                // Erst nachschlagen und bearbeiten, dann filtern: Filter können auch Ort und Beschreibungen prüfen
+                {
+                    let db = store.db.lock().unwrap();
+                    if let Err(e) = rewrites.describe_and_apply(&db, &mut t) {
+                        eprintln!("Datenbank: {e:#}");
+                    }
+                    if !filters.allows(&t) {
+                        continue;
+                    }
+                    // Doppelfilter nach den Regeln, damit eine bessere Fassung genauso bearbeitet ist
+                    let now = std::time::Instant::now();
+                    match dedupe.check(&t, now) {
+                        Verdict::New => {}
+                        Verdict::Drop => continue,
+                        Verdict::Better(better) => {
+                            if let Err(e) = db.update_message(better.id, &better.message) {
+                                eprintln!("Datenbank: {e:#}");
+                            }
+                            println!("{}\t{}\t{}\t{}\t{}\t{} (bessere Fassung)", better.time.format("%F %T"), better.source, better.kind.as_str(), better.address, better.sub, better.message);
+                            // Gleiche ID: Weboberfläche und Desktop-App ersetzen die Zeile, kein neuer Alarm
+                            let _ = store.live.send(better);
+                            continue;
+                        }
+                    }
+                    match db.insert(&t) {
+                        Ok(id) => t.id = id,
+                        Err(e) => eprintln!("Datenbank: {e:#}"),
+                    }
+                    dedupe.remember(&t, now);
                 }
-            }
-            println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
-            notify.handle(&t);
-            plugins.observe(&t);
-            let _ = store.live.send(t.clone());
-            if let Some(forward) = &forward {
-                let _ = forward.send(t).await;
+                println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
+                notify.handle(&t);
+                plugins.observe(&t);
+                let _ = store.live.send(t.clone());
+                if let Some(forward) = &forward {
+                    let _ = forward.send(t).await;
+                }
             }
         }
     });

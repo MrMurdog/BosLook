@@ -24,6 +24,13 @@ pub struct Config {
     pub rewrites: Vec<RewriteConfig>,
     #[serde(default, rename = "filter")]
     pub filters: Vec<FilterConfig>,
+    #[serde(default, rename = "flexalarm")]
+    pub flexalarms: Vec<crate::flexalarm::FlexalarmConfig>,
+    /// Doppelfilter: gleiche Telegramme eines Kanals innerhalb von `dedupe_window` Sekunden nur einmal
+    #[serde(default)]
+    pub dedupe: bool,
+    #[serde(default = "default_dedupe_window")]
+    pub dedupe_window: u64,
     #[serde(default, rename = "notifier")]
     pub notifiers: Vec<NotifierConfig>,
     #[serde(default, rename = "alarm")]
@@ -226,6 +233,10 @@ fn default_database() -> String {
 
 fn default_notify_repeat() -> u64 {
     60
+}
+
+fn default_dedupe_window() -> u64 {
+    20
 }
 
 fn default_cert() -> String {

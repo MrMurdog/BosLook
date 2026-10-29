@@ -25,6 +25,8 @@ pub enum FromClient {
     /// Plugins mit eigener Seite
     Reset { sources: Vec<String>, history: Vec<Telegram>, pages: Vec<String> },
     Telegram(Telegram),
+    /// Bessere Fassung eines angezeigten Telegramms (Doppelfilter des Servers), gleiche ID
+    Updated(Telegram),
     ServerConfig(Result<String, String>),
     /// Schema, Werte und Soundkarten für das Formular
     ServerForm(Result<serde_json::Value, String>),
@@ -37,6 +39,8 @@ pub enum FromClient {
     DescriptionsChanged(Result<String, String>),
     /// Ergebnis des Testfelds der Bearbeitungsregeln
     RewriteTested(Result<serde_json::Value, String>),
+    /// Telegramme eines Reiters gelöscht (Name des Reiters bzw. Fehler)
+    SourceDeleted(Result<String, String>),
 }
 
 pub enum ToClient {
@@ -50,6 +54,8 @@ pub enum ToClient {
     ImportDescriptions { path: std::path::PathBuf, clear: bool },
     ExportDescriptions(std::path::PathBuf),
     TestRewrite(serde_json::Value),
+    /// Alle Telegramme eines Reiters löschen
+    DeleteSource(String),
 }
 
 /// Startet die Verbindung in einem eigenen Thread. Jede Nachricht an die Oberfläche weckt sie über `wake` auf.
@@ -104,6 +110,7 @@ fn not_connected(cmd: ToClient) -> FromClient {
             FromClient::DescriptionsChanged(Err(e))
         }
         ToClient::TestRewrite(_) => FromClient::RewriteTested(Err(e)),
+        ToClient::DeleteSource(_) => FromClient::SourceDeleted(Err(e)),
     }
 }
 
@@ -151,6 +158,8 @@ async fn session(
     request.headers_mut().insert("cookie", cookie.parse()?);
     let connector = tokio_tungstenite::Connector::Rustls(Arc::new(tls));
     let (mut ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await?;
+    // IDs steigen; eine schon bekannte ist eine bessere Fassung und löst keine Ereignisse aus
+    let mut newest = history.iter().map(|t| t.id).max().unwrap_or(0);
     send(FromClient::Reset { sources, history, pages });
     send(FromClient::Status { text: format!("verbunden mit {base}"), connected: true });
 
@@ -163,6 +172,11 @@ async fn session(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         let t: Telegram = serde_json::from_str(&text)?;
+                        if t.id != 0 && t.id <= newest {
+                            send(FromClient::Updated(t));
+                            continue;
+                        }
+                        newest = newest.max(t.id);
                         events.handle(&t);
                         send(FromClient::Telegram(t));
                     }
@@ -240,6 +254,11 @@ async fn session(
                     let request = http.post(format!("{base}/api/rewrite/test")).header(COOKIE, &cookie).json(&body);
                     let result = async { anyhow::Ok(checked(request).await?.json().await?) }.await;
                     send(FromClient::RewriteTested(result.map_err(|e| format!("{e:#}"))));
+                }
+                Some(ToClient::DeleteSource(source)) => {
+                    let request = http.delete(format!("{base}/api/sources")).header(COOKIE, &cookie).query(&[("source", &source)]);
+                    let result = checked(request).await.map(|_| source);
+                    send(FromClient::SourceDeleted(result.map_err(|e| format!("{e:#}"))));
                 }
             },
         }

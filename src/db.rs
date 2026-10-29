@@ -207,6 +207,19 @@ impl Db {
         run!(self, |pool| sqlx::query_scalar("SELECT DISTINCT source FROM telegrams ORDER BY source").fetch_all(pool).await)
     }
 
+    /// Text eines gespeicherten Telegramms ersetzen (bessere Fassung beim Doppelfilter)
+    pub fn update_message(&self, id: i64, message: &str) -> Result<()> {
+        let sql = self.sql("UPDATE telegrams SET message = ? WHERE id = ?");
+        run!(self, |pool| sqlx::query(&sql).bind(message).bind(id).execute(pool).await.map(|_| ()))
+    }
+
+    /// Alle Telegramme einer Quelle löschen; liefert die Anzahl
+    pub fn delete_source(&self, source: &str) -> Result<u64> {
+        let sql = self.sql("DELETE FROM telegrams WHERE source = ?");
+        let done = run!(self, |pool| sqlx::query(&sql).bind(source).execute(pool).await.map(|r| r.rows_affected()))?;
+        Ok(done)
+    }
+
     /// Die neuesten Telegramme einer Quelle, optional nur die älteren als `before` (für Blättern).
     pub fn latest(&self, source: &str, limit: u32, before: Option<i64>) -> Result<Vec<Telegram>> {
         let sql = format!("SELECT {TELEGRAMS} FROM telegrams WHERE source = ? AND id < ? ORDER BY id DESC LIMIT ?");

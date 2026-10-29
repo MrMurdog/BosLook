@@ -1,6 +1,6 @@
 [package]
 name = "boslook"
-version = "0.3.0"
+version = "0.3.1-a"
 edition = "2024"
 
 [features]

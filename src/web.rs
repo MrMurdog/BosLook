@@ -166,7 +166,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
-        .route("/api/sources", get(sources))
+        .route("/api/sources", get(sources).delete(delete_source))
         .route("/api/telegrams", get(telegrams))
         .route("/api/live", get(live))
         .route("/api/ingest", get(ingest))
@@ -260,6 +260,26 @@ async fn sources(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
 }
 
 #[derive(Deserialize)]
+struct SourceQuery {
+    source: String,
+}
+
+/// Alle Telegramme eines Reiters löschen; nur ohne Eingang, sonst käme der Reiter gleich wieder
+async fn delete_source(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<SourceQuery>) -> Response {
+    if app.session_user(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if app.inputs.contains(&q.source) {
+        let msg = format!("„{}“ ist ein Eingang und kann nur ausgeblendet werden. Zum Löschen erst den Eingang entfernen.", q.source);
+        return (StatusCode::CONFLICT, msg).into_response();
+    }
+    match app.db.lock().unwrap().delete_source(&q.source) {
+        Ok(deleted) => Json(serde_json::json!({ "deleted": deleted })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 struct Page {
     source: String,
     limit: Option<u32>,
@@ -287,15 +307,22 @@ async fn live(State(app): State<Arc<App>>, headers: HeaderMap, ws: WebSocketUpgr
 
 async fn send_live(mut socket: WebSocket, mut rx: broadcast::Receiver<Telegram>) {
     loop {
-        match rx.recv().await {
-            Ok(t) => {
-                let json = serde_json::to_string(&t).unwrap();
-                if socket.send(Message::Text(json.into())).await.is_err() {
-                    return;
+        tokio::select! {
+            t = rx.recv() => match t {
+                Ok(t) => {
+                    let json = serde_json::to_string(&t).unwrap();
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        return;
+                    }
                 }
-            }
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            // Lesen, damit Pings (z. B. der Desktop-App) beantwortet werden
+            msg = socket.recv() => match msg {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
         }
     }
 }

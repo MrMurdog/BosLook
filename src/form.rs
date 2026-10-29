@@ -200,6 +200,10 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
                 field("notify_repeat", "Wiederholungen unterdrücken (s)", Input::Number)
                     .default(60)
                     .help("Gleiche Telegramme innerhalb dieser Sekunden nur einmal benachrichtigen, 0 = aus"),
+                field("dedupe", "Doppelfilter", Input::Bool)
+                    .default(false)
+                    .help("Gleiche Telegramme eines Kanals nur einmal anzeigen; eine bessere Fassung (weniger gestört) ersetzt den Text, ohne erneuten Alarm"),
+                field("dedupe_window", "Doppelfilter: Zeitfenster (s)", Input::Number).default(20),
                 field("update_check", "Nach Updates suchen", Input::Bool).default(true).help("Einmal am Tag bei GitHub nach einer neuen Version fragen"),
                 field("update_channel", "Updates", Input::Select(vec!["stable", "beta"]))
                     .default("stable")
@@ -252,6 +256,23 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
             .into_iter()
             .flatten()
             .collect(),
+        },
+        Section {
+            key: "flexalarm",
+            title: "Flexalarm",
+            help: "Ton-RICs ohne Text bekommen den Text der Text-RIC, die kurz danach kommt. Sie warten dafür höchstens das Zeitfenster, danach laufen sie ohne Text weiter.",
+            kind: SectionKind::List,
+            fields: vec![
+                name(),
+                field("source", "Kanal", Input::Text).help("Regulärer Ausdruck auf den Namen des Eingangs (Reiter), leer = alle"),
+                field("text_ric", "Text-RIC", Input::Text).required().help("z. B. 1859969"),
+                field("text_sub", "Sub der Text-RIC", Input::Select(vec!["a", "b", "c", "d"])).help("leer = jede"),
+                field("start_ric", "Start-RIC", Input::Text).help("Optional; kommt vor den Ton-RICs und bekommt selbst keinen Text"),
+                field("tone", "Ton-RICs", Input::Text).help("Regulärer Ausdruck, z. B. ^1856; leer = jede POCSAG-Meldung ohne Text auf dem Kanal"),
+                field("window", "Zeitfenster (s)", Input::Number).default(3).help("So lange warten Ton-RICs auf die Text-RIC"),
+                field("show_text", "Text-RIC anzeigen", Input::Bool).default(true),
+                field("show_start", "Start-RIC anzeigen", Input::Bool).default(true),
+            ],
         },
         Section {
             key: "filter",
@@ -341,6 +362,12 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
         },
     ];
     sections.into_iter().chain(plugin_sections).collect()
+}
+
+/// Betrifft die Fehlermeldung aus [`apply`] den Abschnitt mit diesem Titel? (`Titel: …`,
+/// `Titel 'Name': …`, `Titel Nr. 2: …`)
+pub fn mentions(msg: &str, title: &str) -> bool {
+    !title.is_empty() && [":", " '", " Nr. "].iter().any(|after| msg.contains(&format!("{title}{after}")))
 }
 
 /// `plugin.name` → (`Some("plugin")`, `"name"`)
@@ -653,6 +680,14 @@ pocsag = "auto"
         let mut form = to_json(TEXT, &schema)?;
         change(&mut form);
         apply(TEXT, &schema, &form)
+    }
+
+    #[test]
+    fn errors_name_their_section() {
+        let missing = roundtrip(|f| f["input"][0]["name"] = "".into()).unwrap_err().to_string();
+        assert!(mentions(&missing, "Eingänge"), "{missing}");
+        assert!(!mentions(&missing, "Benutzer"));
+        assert!(mentions("Weboberfläche: „Adresse“ ist leer", "Weboberfläche"));
     }
 
     #[test]

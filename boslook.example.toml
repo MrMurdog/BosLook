@@ -10,6 +10,11 @@ database = "boslook.db"
 # benachrichtigen, 0 = jedes Mal
 # notify_repeat = 60
 
+# Doppelfilter: gleiche Telegramme eines Kanals innerhalb von dedupe_window Sekunden nur einmal
+# anzeigen; eine bessere Fassung (weniger gestörte Zeichen) ersetzt den Text, ohne neuen Alarm
+# dedupe = true
+# dedupe_window = 20
+
 [web]
 listen = "0.0.0.0:8443"
 # "off" = HTTP, "self-signed" = Zertifikat wird beim ersten Start erstellt,
@@ -102,6 +107,16 @@ pocsag = "auto"
 # [[rewrite.replace]]         # Ersetzungen in der Meldung, nacheinander
 # pattern = "^F(\\d)\\b"
 # with = "Feuer $1"           # $1, $2 … = Klammern aus pattern
+
+# Flexalarm: Ton-RICs ohne Text bekommen den Text der Text-RIC, die kurz danach kommt.
+# Sie warten dafür höchstens window Sekunden, danach laufen sie ohne Text weiter.
+# [[flexalarm]]
+# name = "Leitstelle"
+# text_ric = "1859969"
+# source = "^Funk$"           # nur dieser Kanal (leer = alle)
+# start_ric = "1859960"       # optional, bekommt selbst keinen Text
+# tone = "^1856"              # Ton-RICs (leer = jede POCSAG-Meldung ohne Text)
+# window = 3
 
 # Filter (reguläre Ausdrücke). Ohne Filter wird alles angezeigt.
 # Ein Filter mit source gilt nur für diesen Kanal, einer ohne source für alle Kanäle.

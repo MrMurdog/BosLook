@@ -2,9 +2,11 @@
 
 pub mod config;
 pub mod db;
+pub mod dedupe;
 pub mod decoder;
 pub mod descriptions;
 pub mod filter;
+pub mod flexalarm;
 pub mod form;
 pub mod forward;
 pub mod input;

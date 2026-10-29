@@ -31,10 +31,45 @@ pattern = '^F(\d)\b'
 with = "Feuer $1"
 ```
 
-Ablauf: Beschreibung nachschlagen → Bearbeitungsregeln (hat sich die RIC geändert, wird die
-Beschreibung neu nachgeschlagen) → Filter → speichern, Alarme, Anzeige, Weiterleitung. Das gilt
-auch für Telegramme von Clients und für Wetterwarnungen. Im Formular gibt es unter den Regeln
-ein Testfeld, das die noch nicht gespeicherten Regeln auf ein eingetipptes Telegramm anwendet.
+Ablauf: Plugins → Flexalarm → Beschreibung nachschlagen → Bearbeitungsregeln (hat sich die RIC
+geändert, wird die Beschreibung neu nachgeschlagen) → Filter → Doppelfilter → speichern, Alarme,
+Anzeige, Weiterleitung. Das gilt auch für Telegramme von Clients und für Wetterwarnungen. Im
+Formular gibt es unter den Regeln ein Testfeld, das die noch nicht gespeicherten Regeln auf ein
+eingetipptes Telegramm anwendet.
+
+## Flexalarm
+
+Bei Flexalarm kommen zuerst Ton-RICs ohne Text (je Einheit), kurz danach eine Text-RIC mit dem
+Alarmtext. Ein Eintrag `[[flexalarm]]` gibt den Ton-RICs diesen Text, damit Bearbeitung, Filter
+und Alarme damit arbeiten können:
+
+```toml
+[[flexalarm]]
+name = "Leitstelle"
+text_ric = "1859969"
+# source = "^Funk$"     # nur dieser Kanal (leer = alle)
+# text_sub = "d"        # nur diese Sub der Text-RIC (leer = jede)
+# start_ric = "1859960" # kommt vor den Ton-RICs, bekommt selbst keinen Text
+# tone = "^1856"        # Ton-RICs (leer = jede POCSAG-Meldung ohne Text auf dem Kanal)
+# window = 3            # Sekunden, die Ton-RICs auf die Text-RIC warten
+# show_text = true      # Text-RIC selbst anzeigen
+# show_start = true     # Start-RIC anzeigen
+```
+
+Ton-RICs warten höchstens `window` Sekunden. Kommt die Text-RIC, laufen alle wartenden des
+Kanals mit ihrem Text weiter (in der Reihenfolge des Empfangs, mit ihrer Empfangszeit), sonst
+nach Ablauf des Fensters ohne Text. Nur die wartenden Ton-RICs verzögern sich, alle anderen
+Telegramme nicht.
+
+## Doppelfilter
+
+Mit `dedupe = true` erscheinen gleiche Telegramme eines Kanals innerhalb von `dedupe_window`
+Sekunden (Standard 20, gezählt ab dem ersten) nur einmal. Gleich heißt: gleiche Art, Adresse und
+Sub, und der Text ist gleich bis auf gestörte Zeichen (`�`) oder ein abgeschnittenes Ende. Das
+erste wird sofort gespeichert und gemeldet. Kommt danach eine bessere Fassung (mehr lesbare
+Zeichen), ersetzt sie den Text des gespeicherten Telegramms, Weboberfläche und Desktop-App
+aktualisieren die Zeile; ein zweiter Alarm geht nicht raus, weitergeleitet wird sie auch nicht.
+Schlechtere oder gleiche Fassungen fallen weg.
 
 ## Beschreibungen
 

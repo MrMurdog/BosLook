@@ -83,8 +83,9 @@
   #settings .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
   #settings-msg { white-space: pre-wrap; font-size: 13px; }
   #settings-msg.err { color: var(--danger); font-family: ui-monospace, monospace; }
-  #cfg-form fieldset { margin: 0 0 14px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-  #cfg-form legend { font-weight: 600; padding: 0 6px; }
+  #cfg-form .section { margin: 0 0 14px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  #cfg-form .section > summary { font-weight: 600; cursor: pointer; }
+  #cfg-form .section[open] > summary { margin-bottom: 8px; }
   #cfg-form .help { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
   #cfg-form .item { border-top: 1px solid var(--line); padding: 10px 0; }
   #cfg-form .row { display: grid; grid-template-columns: 14rem minmax(0, 32rem); gap: 4px 12px; align-items: start; margin: 6px 0; }
@@ -135,6 +136,7 @@
         <div id="columns"></div>
         <button id="columns-reset" class="entry">Spalten zurücksetzen</button>
         <h2>Reiter</h2>
+        <div id="tab-list"></div>
         <button id="tabs-sort" class="entry">Reiter A–Z sortieren</button>
       </div></details>
       <details id="plugins" class="menu"><summary class="button">Plugins ▾</summary><div id="plugin-list"></div></details>
@@ -348,6 +350,7 @@ function panel(source) {
   const tab = document.createElement("button");
   tab.draggable = true;
   tab.dataset.source = source;
+  tab.hidden = hiddenTabs.includes(source);
   tab.append(source);
   const p = { rows: el.querySelector("tbody"), more: el.querySelector(".more"), oldest: null, el, tab, unread: 0 };
   p.more.onclick = () => loadOlder(source);
@@ -359,6 +362,7 @@ function panel(source) {
   tab.ondragend = () => {
     tab.classList.remove("dragging");
     save("boslook.tabs", [...$("tabs").children].map((t) => t.dataset.source));
+    tabMenu();
   };
   panels.set(source, p);
   $("empty").hidden = true;
@@ -366,8 +370,53 @@ function panel(source) {
   columns();
   const next = [...$("tabs").children].find((t) => tabOrder(source, t.dataset.source) < 0);
   $("tabs").insertBefore(tab, next ?? null);
-  if (!active || source === wanted) select(source);
+  if (!tab.hidden && (!active || panels.get(active).tab.hidden || source === wanted)) select(source);
+  tabMenu();
   return p;
+}
+
+// Reiter im Menü „Ansicht“: ausblenden gilt nur für diesen Browser, löschen entfernt die
+// Telegramme des Reiters aus der Datenbank
+let hiddenTabs = load("boslook.hiddenTabs", []);
+function tabMenu() {
+  const sources = [...$("tabs").children].map((t) => t.dataset.source);
+  $("tab-list").replaceChildren(...sources.map((source) => {
+    const box = el("input"); box.type = "checkbox"; box.checked = !hiddenTabs.includes(source);
+    box.onchange = () => {
+      hiddenTabs = box.checked ? hiddenTabs.filter((s) => s !== source) : [...hiddenTabs, source];
+      save("boslook.hiddenTabs", hiddenTabs);
+      panels.get(source).tab.hidden = !box.checked;
+      if (box.checked && !active) select(source);
+      if (!box.checked && active === source) selectVisible();
+    };
+    const label = el("label"); label.append(box, " " + source);
+    const remove = el("button", "", "Löschen"); remove.title = "Alle Telegramme dieses Reiters löschen";
+    remove.onclick = () => deleteTab(source);
+    const line = el("div", "col"); line.append(label, remove);
+    return line;
+  }));
+}
+
+// Ersten sichtbaren Reiter wählen; ohne sichtbare keinen
+function selectVisible() {
+  const tab = [...$("tabs").children].find((t) => !t.hidden);
+  if (tab) return select(tab.dataset.source);
+  for (const p of panels.values()) p.el.hidden = true;
+  active = null;
+}
+
+async function deleteTab(source) {
+  if (!confirm(`Alle Telegramme von „${source}“ endgültig löschen?`)) return;
+  const res = await fetch("/api/sources?" + new URLSearchParams({ source }), { method: "DELETE" });
+  if (res.status === 401) return showLogin();
+  if (!res.ok) return alert(await res.text());
+  const p = panels.get(source);
+  p.el.remove(); p.tab.remove(); panels.delete(source);
+  hiddenTabs = hiddenTabs.filter((s) => s !== source);
+  save("boslook.hiddenTabs", hiddenTabs);
+  if (active === source) selectVisible();
+  $("empty").hidden = panels.size > 0;
+  tabMenu();
 }
 
 function select(source) {
@@ -410,6 +459,7 @@ function tabOrder(a, b) {
 $("tabs-sort").onclick = () => {
   save("boslook.tabs", []);
   $("tabs").append(...[...$("tabs").children].sort((a, b) => tabOrder(a.dataset.source, b.dataset.source)));
+  tabMenu();
 };
 
 // Spalten per Ziehen der Überschrift umsortieren (nicht beim Ziehen der Breite am Rand)
@@ -485,6 +535,9 @@ function connect() {
   socket.onmessage = (e) => {
     const t = JSON.parse(e.data);
     const p = panel(t.source);
+    // Gleiche ID: bessere Fassung vom Doppelfilter, ersetzt die Zeile
+    const old = t.id && [...p.rows.children].find((tr) => tr.telegram.id === t.id);
+    if (old) return old.replaceWith(row(t, false));
     p.rows.prepend(row(t, true));
     if (t.source !== active) setUnread(p, p.unread + 1);
   };
@@ -504,6 +557,7 @@ async function showApp() {
   showSettings(false);
   $("panels").innerHTML = ""; $("tabs").innerHTML = "";
   panels.clear(); active = null; $("empty").hidden = false;
+  tabMenu();
   wanted = load("boslook.active", null);
   const res = await fetch("/api/sources");
   if (res.status === 401) return showLogin();
@@ -587,10 +641,17 @@ function renderForm() {
   scrollTo(0, scroll);
 }
 
+// Aufgeklappte Abschnitte; alle anderen sind zu, auch nach dem Neuzeichnen
+const openSections = new Set();
+// Betrifft die Fehlermeldung beim Speichern diesen Abschnitt? (wie boslook::form::mentions)
+const mentions = (msg, title) => title && [":", " '", " Nr. "].some((after) => msg.includes(title + after));
+
 function section(s) {
   const v = cfg.values;
-  const box = el("fieldset");
-  box.append(el("legend", "", s.title));
+  const box = el("details", "section");
+  box.open = openSections.has(s.key);
+  box.ontoggle = () => { if (box.open) openSections.add(s.key); else openSections.delete(s.key); };
+  box.append(el("summary", "", s.title));
   if (s.help) box.append(el("p", "help", s.help));
   if (s.kind === "root") box.append(...fields(s.fields, v));
   else if (s.kind === "table") box.append(...fields(s.fields, v[s.key] ??= newItem(s.fields)));
@@ -764,7 +825,12 @@ async function saveConfig(restart) {
     : await fetch("/api/config/form", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg.values) });
   if (res.status === 401) return showLogin();
   if (!res.ok) {
-    msg.className = "err"; msg.textContent = "Nicht gespeichert: " + await res.text();
+    const text = await res.text();
+    if (!textMode) {
+      for (const s of cfg.schema) if (mentions(text, s.title)) openSections.add(s.key);
+      renderForm();
+    }
+    msg.className = "err"; msg.textContent = "Nicht gespeichert: " + text;
     return;
   }
   msg.className = "";

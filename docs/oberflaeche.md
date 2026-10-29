@@ -7,14 +7,19 @@ nach dem Alphabet. Die Reiter lassen sich mit der Maus verschieben, „Ansicht" 
 sortieren" stellt die alphabetische Reihenfolge wieder her. Neue Telegramme in anderen Reitern
 werden als Zahl am Reiter angezeigt. Unter „Ansicht" lassen sich Spalten ein- und ausblenden und
 mit ▲/▼ verschieben; Spalten lassen sich auch an der Überschrift verschieben und am rechten
-Rand breiter ziehen. „Spalten zurücksetzen" stellt den Standard wieder her. „Clients" zeigt die
+Rand breiter ziehen. „Spalten zurücksetzen" stellt den Standard wieder her. Ebenfalls unter „Ansicht" lassen sich
+Reiter ausblenden (nur in diesem Browser, ihre Telegramme werden weiter empfangen und
+gemeldet) und mit „Löschen" samt allen Telegrammen aus der Datenbank entfernen. Löschen geht nur
+bei Reitern ohne Eingang, z. B. nach dem Umbenennen eines Eingangs; sonst wäre der Reiter beim
+nächsten Telegramm wieder da. „Clients" zeigt die
 weiterleitenden Clients und erzeugt Einrichtungscodes (siehe
 [Weiterleitung](installation.md#weiterleitung-an-einen-server)). Ein Hinweis „Update …“ erscheint, wenn
 eine neue Version bereitsteht ([Updates](installation.md#updates)). Reihenfolge, Breiten
 und der zuletzt gewählte Reiter werden im Browser gespeichert. Seiten von Plugins stehen im Menü
 „Plugins", die Einstellungen hinter ⚙. Auf schmalen Bildschirmen liegt das alles hinter ☰.
 
-Unter „Einstellungen" lässt sich die Konfiguration in einem Formular bearbeiten. Kommentare
+Unter „Einstellungen" lässt sich die Konfiguration in einem Formular bearbeiten. Die Abschnitte
+sind zugeklappt; enthält einer beim Speichern einen Fehler, geht er auf. Kommentare
 in der Datei bleiben dabei erhalten. Passwörter und Tokens für Benutzer und Clients werden im
 Klartext eingegeben und nur als Hash gespeichert; ein leeres Feld lässt sie unverändert. Über
 „Als Text bearbeiten" lässt sich die Datei auch direkt bearbeiten. Beim Speichern wird die
@@ -42,7 +47,8 @@ wie in der Weboberfläche oder als Text. „Beschreibungen" öffnet den Editor f
 Adressbuch in einem eigenen Fenster, die Einträge im Menü „Plugins" (Übersicht
 und Plugins mit eigener Seite) öffnen den Browser. Die Reiter sind alphabetisch sortiert. Spalten
 lassen sich unter „Ansicht" ein- und ausblenden und mit ▲/▼ verschieben und (wie in der
-Weboberfläche) mit der Maus breiter ziehen; alles bleibt gespeichert.
+Weboberfläche) mit der Maus breiter ziehen; alles bleibt gespeichert. Reiter lassen sich dort
+ebenso ausblenden und löschen. Die Abschnitte der Formulare sind beim Start zugeklappt.
 
 Beim Schließen läuft die App im Infobereich weiter („Beenden" im Menü des Symbols). Unter
 Linux braucht das eine Arbeitsumgebung mit Infobereich (KDE, XFCE, GNOME mit
