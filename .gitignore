@@ -16,6 +16,7 @@ __pycache__/
 
 # Arbeitsdateien (Projektbeschreibung, Fragen/Antworten, KI-Anweisungen) bleiben lokal
 /CLAUDE.md
+/md/
 /.claude/
 /PROJEKT.md
 /FRAGENKATALOG*.md

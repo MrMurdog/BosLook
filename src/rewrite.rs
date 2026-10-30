@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 /// Größte RIC, die POCSAG übertragen kann (21 Bit)
-const MAX_RIC: i64 = 2_097_151;
+const MAX_RIC: i64 = 9_999_999;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
