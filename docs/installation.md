@@ -2,7 +2,7 @@
 
 ## Download
 
-Fertige Programme gibt es unter [Releases](https://github.com/MrMurdog/BosLook/releases):
+Fertige Programme gibt es unter [Releases](https://git.boskrypt.ru/MrMurdog/BosLook/releases):
 
 | Plattform | Datei |
 |---|---|
@@ -125,7 +125,8 @@ Servers gelten auch für weitergeleitete Telegramme.
 
 ## Updates
 
-BosLook fragt einmal am Tag bei GitHub nach einer neuen Version (abschaltbar mit
+BosLook fragt einmal am Tag auf [git.boskrypt.ru](https://git.boskrypt.ru/MrMurdog/BosLook/releases)
+nach einer neuen Version (abschaltbar mit
 `update_check = false`, Vorabversionen mit `update_channel = "beta"`). Gibt es eine, erscheint
 in der Kopfzeile der Weboberfläche „Update *Version*" mit einem Link zu den Änderungen und
 „Jetzt aktualisieren": BosLook lädt das passende Programm, prüft es gegen die `SHA256SUMS` des

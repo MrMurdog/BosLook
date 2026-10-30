@@ -55,6 +55,8 @@ pub enum Input {
     /// zurück oder `{"new": "Klartext"}`.
     Secret,
     Number,
+    /// Kommazahl, auch mit Komma statt Punkt
+    Decimal,
     Bool,
     Select(Vec<&'static str>),
     /// Liste von Texten, im Formular eine Zeile je Eintrag
@@ -137,7 +139,7 @@ fn input_fields(device: Input) -> Vec<Field> {
         ]))
         .when("type", &["rtl_sdr"])
         .help("Alle Frequenzen innerhalb von 1 MHz"),
-        field("ppm", "Frequenzkorrektur (ppm)", Input::Number).default(0).when("type", &["rtl_fm", "rtl_sdr"]),
+        field("ppm", "Frequenzkorrektur (ppm)", Input::Decimal).default(0).when("type", &["rtl_fm", "rtl_sdr"]),
         field("gain", "Verstärkung", Input::Text).default("auto").when("type", &["rtl_fm", "rtl_sdr"]).help("in dB, z. B. 38.6, oder auto"),
         // Gleicher Schlüssel wie bei der Soundkarte, darum ohne Standardwert im Formular
         field("device", "Stick", Input::Text).when("type", &["rtl_fm", "rtl_sdr"]).help("Index oder Seriennummer, leer = 0"),
@@ -204,7 +206,7 @@ pub fn server_schema(plugins: &[crate::plugin::Manifest]) -> Vec<Section> {
                     .default(false)
                     .help("Gleiche Telegramme eines Kanals nur einmal anzeigen; eine bessere Fassung (weniger gestört) ersetzt den Text, ohne erneuten Alarm"),
                 field("dedupe_window", "Doppelfilter: Zeitfenster (s)", Input::Number).default(20),
-                field("update_check", "Nach Updates suchen", Input::Bool).default(true).help("Einmal am Tag bei GitHub nach einer neuen Version fragen"),
+                field("update_check", "Nach Updates suchen", Input::Bool).default(true).help("Einmal am Tag auf git.boskrypt.ru nach einer neuen Version fragen"),
                 field("update_channel", "Updates", Input::Select(vec!["stable", "beta"]))
                     .default("stable")
                     .help("beta: auch Vorabversionen anbieten"),
@@ -540,7 +542,13 @@ fn convert(f: &Field, value: Option<&Value>, old: Option<&Value>, context: &str)
         (Input::Number, Value::String(s)) => {
             Some(s.trim().parse::<i64>().map_err(|_| anyhow::anyhow!("{context}: {} ist keine Zahl", f.label))?.into())
         }
-        (Input::Number, Value::Number(_)) | (Input::Bool, Value::Bool(_)) => Some(value.clone()),
+        (Input::Decimal, Value::String(s)) if s.trim().is_empty() => None,
+        (Input::Decimal, Value::String(s)) => {
+            let s = s.trim().replace(',', ".");
+            let number = s.parse::<i64>().map(Value::from).or_else(|_| s.parse::<f64>().map(Value::from));
+            Some(number.map_err(|_| anyhow::anyhow!("{context}: {} ist keine Zahl", f.label))?)
+        }
+        (Input::Number | Input::Decimal, Value::Number(_)) | (Input::Bool, Value::Bool(_)) => Some(value.clone()),
         (Input::Lines, Value::String(s)) => {
             let lines: Vec<Value> = s.lines().filter_map(text).collect();
             (!lines.is_empty()).then(|| lines.into())
@@ -633,7 +641,10 @@ fn json_to_toml(value: &Value) -> Result<toml_edit::Value> {
     Ok(match value {
         Value::String(s) => s.as_str().into(),
         Value::Bool(b) => (*b).into(),
-        Value::Number(n) => n.as_i64().context("Zahl zu groß")?.into(),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => i.into(),
+            None => n.as_f64().context("Zahl zu groß")?.into(),
+        },
         Value::Array(a) => a.iter().map(json_to_toml).collect::<Result<toml_edit::Array>>()?.into(),
         _ => bail!("nicht unterstützter Wert"),
     })
@@ -766,19 +777,20 @@ pocsag = "auto"
         let config = crate::config::Config::parse(&text).unwrap();
         let client = &config.clients[0];
         assert!(client.remote && client.token_hash.is_empty());
-        assert!(matches!(&client.inputs[0].source, crate::config::Source::RtlFm { ppm: 42, device, gain, .. } if device == "0" && gain == "auto"));
+        assert!(matches!(&client.inputs[0].source, crate::config::Source::RtlFm { ppm, device, gain, .. } if *ppm == 42.0 && device == "0" && gain == "auto"));
     }
 
     #[test]
     fn rtl_sdr_channels() {
         let channels = json!([{"name": "Kreis", "frequency": "173.255M"}, {"name": "FMS", "frequency": "172.89M"}]);
-        let input = json!({"name": "Stick", "type": "rtl_sdr", "ppm": "3", "gain": "auto", "channel": channels});
+        let input = json!({"name": "Stick", "type": "rtl_sdr", "ppm": "0,333", "gain": "auto", "channel": channels});
         let text = roundtrip(|f| {
             f["input"] = json!([input.clone()]);
             f["client"] = json!([{"name": "Pi", "token_hash": "", "remote": true, "input": [input]}]);
         })
         .unwrap();
         assert!(text.contains("[[input.channel]]\nname = \"Kreis\"\nfrequency = \"173.255M\"\n"), "{text}");
+        assert!(text.contains("ppm = 0.333\n"), "{text}");
         let config = crate::config::Config::parse(&text).unwrap();
         crate::serve::validate_inputs(&config.inputs).unwrap();
         crate::serve::validate_inputs(&config.clients[0].inputs).unwrap();

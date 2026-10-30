@@ -148,7 +148,7 @@ pub enum Source {
         frequency: String,
         /// Frequenzkorrektur des Sticks
         #[serde(default)]
-        ppm: i32,
+        ppm: f64,
         /// Verstärkung in dB oder `auto`
         #[serde(default = "default_gain")]
         gain: String,
@@ -163,7 +163,7 @@ pub enum Source {
     /// Mehrere Kanäle aus einem RTL-SDR-Stick über `rtl_sdr` und eigenen Demodulator (siehe `sdr.rs`)
     RtlSdr {
         #[serde(default)]
-        ppm: i32,
+        ppm: f64,
         #[serde(default = "default_gain")]
         gain: String,
         #[serde(default = "default_rtl_device")]

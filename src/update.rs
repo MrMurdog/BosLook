@@ -1,15 +1,15 @@
-//! Updates aus den GitHub-Releases von BosLook: neuere Version finden, das passende Programm
+//! Updates aus den Releases von BosLook auf Gitea: neuere Version finden, das passende Programm
 //! laden, gegen `SHA256SUMS` des Releases prüfen und das laufende Programm ersetzen.
 //!
 //! Jedes Release enthält je Plattform die Programme einzeln als `boslook-<target>` bzw.
-//! `boslook-desktop-<target>` (unter Windows mit `.exe`), siehe `.github/workflows/release.yml`.
+//! `boslook-desktop-<target>` (unter Windows mit `.exe`), siehe `.gitea/workflows/release.yml`.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 
-const RELEASES: &str = "https://api.github.com/repos/MrMurdog/BosLook/releases";
+const RELEASES: &str = "https://git.boskrypt.ru/api/v1/repos/MrMurdog/BosLook/releases";
 
 /// Adresse der Releases; mit `BOSLOOK_RELEASES_URL` z. B. für einen Fork oder zum Testen umlenkbar
 fn releases() -> String {
@@ -59,10 +59,10 @@ pub fn newer(a: &str, b: &str) -> bool {
 }
 
 fn get(url: &str) -> Result<ureq::Body> {
-    let response = ureq::get(url).header("User-Agent", concat!("BosLook/", env!("CARGO_PKG_VERSION"))).header("Accept", "application/vnd.github+json").call();
+    let response = ureq::get(url).header("User-Agent", concat!("BosLook/", env!("CARGO_PKG_VERSION"))).header("Accept", "application/json").call();
     match response {
         Ok(response) => Ok(response.into_body()),
-        // GitHub antwortet bei privaten Repositories ohne Anmeldung mit 404
+        // Gitea antwortet bei privaten Repositories ohne Anmeldung mit 404
         Err(ureq::Error::StatusCode(404)) => bail!("{url} nicht gefunden (HTTP 404); Updates gehen nur, wenn das Repository öffentlich ist"),
         Err(e) => Err(anyhow::Error::new(e).context(format!("{url} laden"))),
     }
@@ -81,7 +81,7 @@ fn parse(release: &Value) -> Option<Release> {
     })
 }
 
-/// Neuestes Release aus der Liste der GitHub-API, das neuer als `current` ist
+/// Neuestes Release aus der Liste der Gitea-API, das neuer als `current` ist
 fn pick(list: &Value, current: &str, beta: bool) -> Option<Release> {
     list.as_array()?
         .iter()
@@ -92,7 +92,7 @@ fn pick(list: &Value, current: &str, beta: bool) -> Option<Release> {
 
 /// Neuere Version, falls es eine gibt; `beta` = auch Vorabversionen
 pub fn latest(beta: bool) -> Result<Option<Release>> {
-    let list: Value = serde_json::from_str(&get(&format!("{}?per_page=30", releases()))?.read_to_string()?)?;
+    let list: Value = serde_json::from_str(&get(&format!("{}?limit=30", releases()))?.read_to_string()?)?;
     Ok(pick(&list, CURRENT, beta))
 }
 

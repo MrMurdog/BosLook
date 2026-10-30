@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "boslook"
-version = "0.3.1-a"
+version = "0.3.1-b"
 dependencies = [
  "anyhow",
  "argon2",

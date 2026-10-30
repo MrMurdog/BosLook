@@ -10,7 +10,7 @@
 //! Zustand seiner Eingänge mit `{"status": {...}}`. So bleiben ältere Gegenstellen verträglich.
 //!
 //! Update (ab 0.3.0): `{"update": "<Version>"}` vom Server, nur an Clients ab 0.3.0. Der Client
-//! lädt diese Version aus den GitHub-Releases und startet neu.
+//! lädt diese Version aus den Releases auf Gitea und startet neu.
 
 use crate::config::{ForwardConfig, RemoteConfig};
 use crate::telegram::Telegram;

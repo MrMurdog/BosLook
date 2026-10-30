@@ -21,7 +21,7 @@ alles und zeigt es live in einer Weboberfläche und einer Desktop-App an. Läuft
 ## Download
 
 Fertige Programme für Linux x64, Raspberry Pi (64 und 32 bit) und Windows gibt es unter
-[Releases](https://github.com/MrMurdog/BosLook/releases). Welche Datei wofür, steht unter
+[Releases](https://git.boskrypt.ru/MrMurdog/BosLook/releases). Welche Datei wofür, steht unter
 [Installation](docs/installation.md#download).
 
 ## Schnellstart

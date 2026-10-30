@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Deserialize;
 
-/// Größte RIC, die POCSAG übertragen kann (21 Bit)
+/// Größte RIC nach dem Umschreiben (sieben Stellen)
 const MAX_RIC: i64 = 9_999_999;
 
 #[derive(Debug, Deserialize)]
@@ -204,9 +204,9 @@ mod tests {
         let mut t = pocsag("0001234", "");
         r.apply(&mut t, |_| Ok(())).unwrap();
         assert_eq!(t.address, "0002234");
-        let mut top = pocsag("2097000", "");
+        let mut top = pocsag("9999000", "");
         r.apply(&mut top, |_| Ok(())).unwrap();
-        assert_eq!(top.address, "2097000", "über der größten RIC bleibt sie unverändert");
+        assert_eq!(top.address, "9999000", "über der größten RIC bleibt sie unverändert");
         let mut zvei = Telegram::new(Decoded { kind: Kind::Zvei, address: "12345".into(), sub: String::new(), message: String::new() }, "Test", chrono::Local::now());
         r.apply(&mut zvei, |_| Ok(())).unwrap();
         assert_eq!(zvei.address, "12345");

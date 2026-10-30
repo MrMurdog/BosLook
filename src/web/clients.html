@@ -153,7 +153,7 @@ async function load() {
   $("update-bar").hidden = !names.length;
   $("update-clients").textContent = `${names.length === 1 ? "Client" : names.length + " Clients"} auf ${serverVersion} aktualisieren`;
   $("update-clients").onclick = async () => {
-    if (!confirm(`${names.join(", ")} auf ${serverVersion} aktualisieren? Die Clients laden das Update von GitHub und starten neu.`)) return;
+    if (!confirm(`${names.join(", ")} auf ${serverVersion} aktualisieren? Die Clients laden das Update von git.boskrypt.ru und starten neu.`)) return;
     const res = await fetch("/api/clients/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names }) });
     $("update-msg").textContent = res.ok ? `Angefordert: ${(await res.json()).names.join(", ")}` : await res.text();
   };

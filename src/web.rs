@@ -923,7 +923,7 @@ mod tests {
         let remote = crate::forward::parse_remote(&text).unwrap();
         assert_eq!(remote.inputs.len(), 3, "{text}");
         assert_eq!(remote.inputs[2].sources(), ["Kreis", "FMS"]);
-        assert!(matches!(&remote.inputs[0].source, crate::config::Source::RtlFm { ppm: -3, program: None, .. }));
+        assert!(matches!(&remote.inputs[0].source, crate::config::Source::RtlFm { ppm, program: None, .. } if *ppm == -3.0));
         assert!(matches!(&remote.inputs[1].source, crate::config::Source::Soundcard { device: None }));
         assert_eq!(remote.inputs[1].pocsag, crate::decoder::pocsag::Format::Auto);
         // Ohne Fernkonfiguration nichts schicken

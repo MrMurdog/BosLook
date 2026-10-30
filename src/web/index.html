@@ -805,6 +805,7 @@ function input(f, obj) {
   e.value = type === "secret" ? "" : value ?? "";
   if (type === "password" || type === "secret") { e.type = "password"; e.autocomplete = "new-password"; }
   if (type === "number") e.inputMode = "numeric";
+  if (type === "decimal") e.inputMode = "decimal";
   if (type === "secret") {
     // Gespeichert ist nur der Hash: leer lassen = unverändert
     e.placeholder = typeof value === "string" ? "unverändert" : "neu festlegen";
