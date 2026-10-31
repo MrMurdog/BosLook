@@ -60,8 +60,8 @@ pub struct Flexalarm {
     waiting: Vec<Waiting>,
 }
 
-/// Größte RIC, die POCSAG übertragen kann (21 Bit)
-const MAX_RIC: u32 = 2_097_151;
+/// Größte RIC (sieben Stellen), wie bei den Bearbeitungsregeln
+const MAX_RIC: u32 = 9_999_999;
 
 fn ric(s: &str) -> Option<u32> {
     s.trim().parse().ok().filter(|r| *r <= MAX_RIC)
@@ -221,7 +221,7 @@ mod tests {
         }
         let c = toml::from_str::<F>("[[flexalarm]]\nname = 'LS'\ntext_ric = 'abc'").unwrap();
         assert!(Flexalarm::new(&c.flexalarm).is_err());
-        let c = toml::from_str::<F>("[[flexalarm]]\nname = 'LS'\ntext_ric = '2859969'").unwrap();
+        let c = toml::from_str::<F>("[[flexalarm]]\nname = 'LS'\ntext_ric = '10000000'").unwrap();
         assert!(Flexalarm::new(&c.flexalarm).is_err());
     }
 }
