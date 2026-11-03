@@ -68,8 +68,12 @@ Sekunden (Standard 20, gezählt ab dem ersten) nur einmal. Gleich heißt: gleich
 Sub, und der Text ist gleich bis auf gestörte Zeichen (`�`) oder ein abgeschnittenes Ende. Das
 erste wird sofort gespeichert und gemeldet. Kommt danach eine bessere Fassung (mehr lesbare
 Zeichen), ersetzt sie den Text des gespeicherten Telegramms, Weboberfläche und Desktop-App
-aktualisieren die Zeile; ein zweiter Alarm geht nicht raus, weitergeleitet wird sie auch nicht.
-Schlechtere oder gleiche Fassungen fallen weg.
+aktualisieren die Zeile. Gemeldet wird sie nur für Alarmregeln, die erst die bessere Fassung
+erfüllt (z. B. `message = "(?i)brand"`, wenn das erste „Br��d“ lautete); wer schon alarmiert
+wurde, bekommt keinen zweiten Alarm. War das erste ohne lesbaren Text (z. B. eine Ton-RIC nach
+Ablauf des Flexalarm-Fensters), läuft die Fassung mit Text vollständig weiter: Alarmregeln,
+Plugins und Weiterleitung bekommen sie wie ein neues Telegramm. Schlechtere oder gleiche
+Fassungen fallen weg.
 
 ## Beschreibungen
 
