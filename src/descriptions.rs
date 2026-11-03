@@ -24,7 +24,8 @@ const HEADER: [&str; 4] = ["adresse", "ort", "kurzbeschreibung", "langbeschreibu
 /// `1234567a`, `123 b`, `1234567*` → einheitliche Schreibweise (`1234567a`, `0000123b`, …).
 pub fn normalize_address(address: &str) -> Result<String> {
     let compact: String = address.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
-    let split = compact.len().saturating_sub(1);
+    // Am letzten Zeichen trennen, nicht am letzten Byte (sonst Absturz bei z. B. „1234567ä“)
+    let split = compact.char_indices().last().map_or(0, |(i, _)| i);
     let (ric, sub) = compact.split_at(split);
     if ric.is_empty() || ric.len() > 7 || !ric.bytes().all(|b| b.is_ascii_digit()) || !matches!(sub, "a" | "b" | "c" | "d" | "*") {
         bail!("ungültige Adresse „{}“ (erwartet RIC und Sub a–d oder *, z. B. 1234567a)", address.trim());
@@ -259,6 +260,8 @@ mod tests {
         assert_eq!(normalize_address("1234567a").unwrap(), "1234567a");
         assert_eq!(normalize_address(" 123 B ").unwrap(), "0000123b");
         assert_eq!(normalize_address("0082643*").unwrap(), "0082643*");
+        assert!(normalize_address("1234567ä").is_err());
+        assert!(normalize_address("ä").is_err());
         for bad in ["1234567", "1234567e", "12345678a", "1234567 1", "abc*", "*", ""] {
             assert!(normalize_address(bad).is_err(), "{bad}");
         }
