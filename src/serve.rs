@@ -189,7 +189,9 @@ pub async fn run(config_path: &str) -> Result<()> {
     }
     if let Some(weather) = config.weather {
         let (tx, app) = (tx.clone(), app.clone());
-        std::thread::spawn(move || crate::weather::run(&weather, &app.db, &tx));
+        // Eigene Kopie der Regeln: bekannte Warnungen stehen bearbeitet in der Datenbank
+        let rewrites = Rewrites::new(&config.rewrites)?;
+        std::thread::spawn(move || crate::weather::run(&weather, &app.db, &rewrites, &tx));
     }
     drop(tx);
 
