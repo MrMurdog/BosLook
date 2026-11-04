@@ -220,6 +220,8 @@ pub async fn run(config_path: &str) -> Result<()> {
                 _ = expired => flexalarm.expire(std::time::Instant::now()),
             };
             for mut t in ready {
+                // Bessere Fassung eines Telegramms, das zuerst ohne Text gespeichert war
+                let mut replaced = false;
                 // Erst nachschlagen und bearbeiten, dann filtern: Filter können auch Ort und Beschreibungen prüfen
                 {
                     let db = store.db.lock().unwrap();
@@ -234,26 +236,38 @@ pub async fn run(config_path: &str) -> Result<()> {
                     match dedupe.check(&t, now) {
                         Verdict::New => {}
                         Verdict::Drop => continue,
-                        Verdict::Better(better) => {
+                        Verdict::Better { telegram: better, previous } => {
+                            let better = *better;
                             if let Err(e) = db.update_message(better.id, &better.message) {
                                 eprintln!("Datenbank: {e:#}");
                             }
                             println!("{}\t{}\t{}\t{}\t{}\t{} (bessere Fassung)", better.time.format("%F %T"), better.source, better.kind.as_str(), better.address, better.sub, better.message);
-                            // Gleiche ID: Weboberfläche und Desktop-App ersetzen die Zeile, kein neuer Alarm
-                            let _ = store.live.send(better);
-                            continue;
+                            // Gleiche ID: Weboberfläche und Desktop-App ersetzen die Zeile
+                            let _ = store.live.send(better.clone());
+                            if !crate::dedupe::blank(&previous) {
+                                // Nur Alarmregeln, die erst die bessere Fassung erfüllt
+                                notify.handle_better(&Telegram { message: previous, ..better.clone() }, &better);
+                                continue;
+                            }
+                            // Das erste war ohne Text: jetzt vollständig melden, an Plugins und weiterleiten
+                            t = better;
+                            replaced = true;
                         }
                     }
-                    match db.insert(&t) {
-                        Ok(id) => t.id = id,
-                        Err(e) => eprintln!("Datenbank: {e:#}"),
+                    if !replaced {
+                        match db.insert(&t) {
+                            Ok(id) => t.id = id,
+                            Err(e) => eprintln!("Datenbank: {e:#}"),
+                        }
+                        dedupe.remember(&t, now);
                     }
-                    dedupe.remember(&t, now);
                 }
-                println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
+                if !replaced {
+                    println!("{}\t{}\t{}\t{}\t{}\t{}", t.time.format("%F %T"), t.source, t.kind.as_str(), t.address, t.sub, t.message);
+                    let _ = store.live.send(t.clone());
+                }
                 notify.handle(&t);
                 plugins.observe(&t);
-                let _ = store.live.send(t.clone());
                 if let Some(forward) = &forward {
                     let _ = forward.send(t).await;
                 }
