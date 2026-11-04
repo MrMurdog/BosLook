@@ -5,6 +5,7 @@
 //! Zeitraum und Beschreibung. Bereits gespeicherte Warnungen werden nicht erneut gemeldet.
 
 use crate::db::Db;
+use crate::rewrite::Rewrites;
 use crate::telegram::{Decoded, Kind, Telegram};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
@@ -72,15 +73,15 @@ fn parse(jsonp: &str, warncells: &[String]) -> Result<Vec<Decoded>> {
     Ok(out)
 }
 
-pub fn run(config: &WeatherConfig, db: &Mutex<Db>, tx: &mpsc::Sender<Telegram>) {
+pub fn run(config: &WeatherConfig, db: &Mutex<Db>, rewrites: &Rewrites, tx: &mpsc::Sender<Telegram>) {
     loop {
         let result = fetch(WARNINGS_URL).and_then(|text| parse(&text, &config.warncells));
         match result {
             Ok(warnings) => {
                 for d in warnings {
-                    let known = db.lock().unwrap().contains(d.kind, &d.address, &d.message).unwrap_or(false);
-                    if !known {
-                        let _ = tx.blocking_send(Telegram::new(d, SOURCE, Local::now()));
+                    let t = Telegram::new(d, SOURCE, Local::now());
+                    if !known(&db.lock().unwrap(), rewrites, &t) {
+                        let _ = tx.blocking_send(t);
                     }
                 }
             }
@@ -88,6 +89,14 @@ pub fn run(config: &WeatherConfig, db: &Mutex<Db>, tx: &mpsc::Sender<Telegram>) 
         }
         std::thread::sleep(Duration::from_secs(config.interval));
     }
+}
+
+/// Schon gespeichert? In der Datenbank steht die Warnung so, wie die Bearbeitungsregeln sie
+/// geändert haben; ohne diesen Vergleich käme jede geänderte Warnung bei jeder Abfrage neu.
+fn known(db: &Db, rewrites: &Rewrites, t: &Telegram) -> bool {
+    let mut stored = t.clone();
+    let _ = rewrites.describe_and_apply(db, &mut stored);
+    db.contains(stored.kind, &stored.address, &stored.message).unwrap_or(false)
 }
 
 fn fetch(url: &str) -> Result<String> {
@@ -125,5 +134,23 @@ mod tests {
         assert!(got[0].message.contains(" bis "));
         assert!(parse(jsonp, &["105970000".into()]).unwrap()[0].message.contains("60 km/h"));
         assert!(parse("Fehler", &[]).is_err());
+    }
+
+    #[test]
+    fn known_compares_rewritten_text() {
+        #[derive(Deserialize)]
+        struct R {
+            rewrite: Vec<crate::rewrite::RewriteConfig>,
+        }
+        let rules = toml::from_str::<R>("[[rewrite]]\nname = 'Leerzeichen'\n[[rewrite.replace]]\npattern = '\\s+'\nwith = ' '\n").unwrap();
+        let rewrites = Rewrites::new(&rules.rewrite).unwrap();
+        let db = Db::open(":memory:").unwrap();
+        let d = Decoded { kind: Kind::Wetter, address: "Kreis".into(), sub: "2".into(), message: "Sturm   ab 12".into() };
+        let raw = Telegram::new(d, SOURCE, Local::now());
+        assert!(!known(&db, &rewrites, &raw));
+        let mut stored = raw.clone();
+        stored.message = "Sturm ab 12".into();
+        db.insert(&stored).unwrap();
+        assert!(known(&db, &rewrites, &raw));
     }
 }
