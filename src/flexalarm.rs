@@ -1,7 +1,8 @@
 //! Flexalarm: Ton-RICs (ohne Text) bekommen den Text der Text-RIC, die kurz danach kommt.
 //!
 //! Ton-RICs warten dafür höchstens `window` Sekunden. Kommt die Text-RIC, laufen alle wartenden
-//! des Kanals mit ihrem Text weiter, sonst nach Ablauf des Fensters ohne Text.
+//! des Kanals mit ihrem Text weiter, sonst nach Ablauf des Fensters ohne Text. Regeln mit `tone`
+//! werden vor denen ohne geprüft, damit mehrere Regeln auf einem Kanal ihre Ton-RICs trennen.
 
 use crate::telegram::{Kind, Telegram};
 use anyhow::{Context, Result};
@@ -84,7 +85,11 @@ impl Flexalarm {
                 show_start: c.show_start,
             })
         });
-        Ok(Flexalarm { rules: rules.collect::<Result<_>>()?, waiting: Vec::new() })
+        let mut rules: Vec<Rule> = rules.collect::<Result<_>>()?;
+        // Regeln mit eigenem Muster zuerst, sonst nimmt eine allgemeine Regel desselben Kanals
+        // alle Ton-RICs; sonst bleibt die Reihenfolge der Konfiguration
+        rules.sort_by_key(|r| r.tone.is_none());
+        Ok(Flexalarm { rules, waiting: Vec::new() })
     }
 
     /// Nimmt ein Telegramm an und liefert, was jetzt weiterläuft (in Empfangsreihenfolge)
@@ -111,10 +116,8 @@ impl Flexalarm {
                 }
                 return out;
             }
-            let tone = match &rule.tone {
-                Some(re) => re.is_match(&t.address),
-                None => t.message.trim().is_empty(),
-            };
+            // Nur Ton-RICs ohne eigenen Text warten, auch mit Muster
+            let tone = t.message.trim().is_empty() && rule.tone.as_ref().is_none_or(|re| re.is_match(&t.address));
             if tone {
                 self.waiting.push(Waiting { rule: i, deadline: now + rule.window, t });
                 return out;
@@ -211,6 +214,21 @@ mod tests {
         assert_eq!(texts(&f.push(pocsag("Funk", "1856098", ""), now)), [("1856098", "")]);
         assert!(f.push(pocsag("Funk", "1856107", ""), now).is_empty());
         assert_eq!(texts(&f.push(pocsag("Funk", "1859969", "BMA"), now)), [("1856107", "BMA"), ("1859969", "BMA")]);
+        // Ton-RIC mit eigenem Text wartet nicht und behält ihn
+        assert_eq!(texts(&f.push(pocsag("Funk", "1856107", "THL Person im Wasser"), now)), [("1856107", "THL Person im Wasser")]);
+    }
+
+    /// Zwei Regeln auf einem Kanal: die mit Muster bekommt ihre Ton-RICs, auch wenn sie später steht
+    #[test]
+    fn rules_with_tone_pattern_first() {
+        let mut f = flex(
+            "[[flexalarm]]\nname = 'Leitstelle'\ntext_ric = '1859969'\n[[flexalarm]]\nname = 'RTH'\ntext_ric = '1859979'\ntone = '^18597'",
+        );
+        let now = Instant::now();
+        assert!(f.push(pocsag("Funk", "1859701", ""), now).is_empty());
+        assert!(f.push(pocsag("Funk", "1856098", ""), now).is_empty());
+        assert_eq!(texts(&f.push(pocsag("Funk", "1859979", "RTH Einsatz"), now)), [("1859701", "RTH Einsatz"), ("1859979", "RTH Einsatz")]);
+        assert_eq!(texts(&f.push(pocsag("Funk", "1859969", "F2 Brand"), now)), [("1856098", "F2 Brand"), ("1859969", "F2 Brand")]);
     }
 
     #[test]
