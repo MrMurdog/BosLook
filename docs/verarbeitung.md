@@ -59,7 +59,11 @@ text_ric = "1859969"
 Ton-RICs warten höchstens `window` Sekunden. Kommt die Text-RIC, laufen alle wartenden des
 Kanals mit ihrem Text weiter (in der Reihenfolge des Empfangs, mit ihrer Empfangszeit), sonst
 nach Ablauf des Fensters ohne Text. Nur die wartenden Ton-RICs verzögern sich, alle anderen
-Telegramme nicht.
+Telegramme nicht. Es warten nur Meldungen ohne eigenen Text, auch wenn `tone` gesetzt ist.
+
+Mehrere Einträge auf einem Kanal (z. B. Leitstelle und Rettungshubschrauber mit eigener Text-RIC)
+brauchen `tone`, damit jede Ton-RIC zur richtigen Text-RIC findet: Einträge mit `tone` werden
+vor denen ohne geprüft, ein Eintrag ohne `tone` nimmt die übrigen.
 
 ## Doppelfilter
 
