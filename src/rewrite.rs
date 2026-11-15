@@ -90,9 +90,11 @@ impl Rewrites {
     }
 
     /// Wendet die passenden Regeln an und liefert ihre Namen. Ändert eine Regel die RIC, holt
-    /// `describe` die Beschreibung der neuen, damit folgende Regeln schon deren Ort sehen.
+    /// `describe` die Beschreibung der neuen, damit folgende Regeln schon deren Ort sehen. Schlägt
+    /// das fehl, laufen die übrigen Regeln trotzdem; der erste Fehler kommt danach zurück.
     pub fn apply(&self, t: &mut Telegram, mut describe: impl FnMut(&mut Telegram) -> Result<()>) -> Result<Vec<&str>> {
         let mut applied = Vec::new();
+        let mut failed = None;
         for rule in &self.0 {
             if !rule.filter.matches(t) {
                 continue;
@@ -108,7 +110,9 @@ impl Rewrites {
                     Ok(ric @ 0..=MAX_RIC) => {
                         t.address = format!("{ric:07}");
                         (t.ort, t.kurz, t.lang) = Default::default();
-                        describe(t)?;
+                        if let Err(e) = describe(t) {
+                            failed.get_or_insert(e);
+                        }
                     }
                     _ => eprintln!("Bearbeitung '{}': RIC {} {add:+} ergibt keine gültige RIC", rule.name, t.address),
                 }
@@ -117,7 +121,10 @@ impl Rewrites {
                 break;
             }
         }
-        Ok(applied)
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(applied),
+        }
     }
 
     /// Beschreibung nachschlagen und Regeln anwenden; die Regeln laufen auch, wenn das
@@ -229,6 +236,14 @@ mod tests {
         assert_eq!((t.address.as_str(), t.ort.as_str()), ("0002234", "Neu"));
         drop(db);
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn failed_lookup_does_not_stop_later_rules() {
+        let r = rewrites("[[rewrite]]\nname = \"Plus\"\naddress_add = 1000\n[[rewrite]]\nname = \"Danach\"\n[[rewrite.replace]]\npattern = \"x\"\nwith = \"y\"\n");
+        let mut t = pocsag("0001234", "x");
+        assert!(r.apply(&mut t, |_| anyhow::bail!("Datenbank weg")).is_err());
+        assert_eq!((t.address.as_str(), t.message.as_str()), ("0002234", "y"));
     }
 
     #[test]
