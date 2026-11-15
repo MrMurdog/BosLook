@@ -170,8 +170,17 @@ impl Notify {
         if self.repeats.is_repeat(t, Instant::now()) {
             return;
         }
-        for (target, title, body, priority) in targets(&self.alarms, t) {
+        for (target, title, body, priority) in targets(&self.alarms, t, |_| true) {
             let _ = self.senders[target].send((title, body, priority, t.clone()));
+        }
+    }
+
+    /// Bessere Fassung eines schon gemeldeten Telegramms (Doppelfilter): nur die Alarmregeln
+    /// melden, die erst die bessere Fassung erfüllt, damit niemand doppelt alarmiert wird.
+    pub fn handle_better(&mut self, previous: &Telegram, better: &Telegram) {
+        self.repeats.is_repeat(better, Instant::now());
+        for (target, title, body, priority) in targets(&self.alarms, better, |a| !a.filter.matches(previous)) {
+            let _ = self.senders[target].send((title, body, priority, better.clone()));
         }
     }
 }
@@ -237,9 +246,9 @@ fn compile(a: &AlarmConfig, notifiers: &[NotifierConfig]) -> Result<Alarm> {
 /// Welche Ziele mit welchem Titel und Text benachrichtigt werden. Passen mehrere Regeln auf
 /// dasselbe Ziel, gibt es trotzdem nur eine Nachricht (mit der höchsten Priorität und den
 /// Vorlagen der ersten passenden Regel).
-fn targets(alarms: &[Alarm], t: &Telegram) -> Vec<(usize, String, String, Priority)> {
+fn targets(alarms: &[Alarm], t: &Telegram, wanted: impl Fn(&Alarm) -> bool) -> Vec<(usize, String, String, Priority)> {
     let mut out: Vec<(usize, Vec<&Alarm>, Priority)> = Vec::new();
-    for a in alarms.iter().filter(|a| a.filter.matches(t)) {
+    for a in alarms.iter().filter(|a| a.filter.matches(t) && wanted(a)) {
         for &target in &a.targets {
             match out.iter_mut().find(|(i, _, _)| *i == target) {
                 Some((_, matched, priority)) => {
@@ -403,14 +412,18 @@ mod tests {
         )
         .unwrap();
         let alarms: Vec<Alarm> = c.alarm.iter().map(|a| compile(a, &c.notifier).unwrap()).collect();
-        let got = |t: Telegram| targets(&alarms, &t).into_iter().map(|(i, title, _, p)| (i, title, p)).collect::<Vec<_>>();
+        let got = |t: Telegram| targets(&alarms, &t, |_| true).into_iter().map(|(i, title, _, p)| (i, title, p)).collect::<Vec<_>>();
         assert_eq!(
             got(telegram(Kind::Pocsag, "1859992", "Brand 3")),
             [(0, "Schleife, Brand".into(), Priority::High), (1, "Schleife".into(), Priority::Normal)]
         );
         let mut brand = telegram(Kind::Pocsag, "1234567", "BRAND");
         (brand.ort, brand.kurz) = ("Musterstadt".into(), "FW".into());
-        assert_eq!(targets(&alarms, &brand), [(0, "🔥 FW".into(), "Musterstadt: BRAND (Brand)".into(), Priority::High)]);
+        // Bessere Fassung: nur „Brand“ ist neu erfüllt, „Schleife“ hat schon gemeldet
+        let previous = telegram(Kind::Pocsag, "1859992", "Br��d 3");
+        let newly = targets(&alarms, &telegram(Kind::Pocsag, "1859992", "Brand 3"), |a| !a.filter.matches(&previous));
+        assert_eq!(newly.into_iter().map(|(i, _, _, p)| (i, p)).collect::<Vec<_>>(), [(0, Priority::High)]);
+        assert_eq!(targets(&alarms, &brand, |_| true), [(0, "🔥 FW".into(), "Musterstadt: BRAND (Brand)".into(), Priority::High)]);
         assert!(got(telegram(Kind::Fms, "1859992", "")).is_empty());
 
         let unknown: AlarmConfig = toml::from_str("name = 'X'\nnotify = ['Fax']").unwrap();

@@ -1,7 +1,9 @@
 //! Doppelfilter: Gleiche Telegramme auf demselben Kanal innerhalb des Zeitfensters nur einmal.
 //!
 //! Das erste wird sofort gespeichert und gemeldet. Eine spätere, bessere Fassung (mehr lesbare
-//! Zeichen) ersetzt nur seinen Text; schlechtere fallen weg.
+//! Zeichen) ersetzt seinen Text; schlechtere fallen weg. Gemeldet wird die bessere Fassung nur
+//! für Alarmregeln, die erst sie erfüllt. War das erste ohne Text (z. B. Ton-RIC nach Ablauf des
+//! Flexalarm-Fensters), läuft die Fassung mit Text vollständig weiter wie ein neues Telegramm.
 
 use crate::telegram::Telegram;
 use std::time::{Duration, Instant};
@@ -18,8 +20,8 @@ pub struct Dedupe {
 #[derive(Debug)]
 pub enum Verdict {
     New,
-    /// Bessere Fassung: das gespeicherte Telegramm mit dem neuen Text
-    Better(Telegram),
+    /// Bessere Fassung: das gespeicherte Telegramm mit dem neuen Text und der bisherige Text
+    Better { telegram: Box<Telegram>, previous: String },
     Drop,
 }
 
@@ -38,8 +40,8 @@ impl Dedupe {
         match found {
             None => Verdict::New,
             Some(seen) if score(&t.message) > score(&seen.message) => {
-                seen.message = t.message.clone();
-                Verdict::Better(seen.clone())
+                let previous = std::mem::replace(&mut seen.message, t.message.clone());
+                Verdict::Better { telegram: Box::new(seen.clone()), previous }
             }
             Some(_) => Verdict::Drop,
         }
@@ -56,6 +58,11 @@ impl Dedupe {
 /// Gleich bis auf gestörte Zeichen oder ein abgeschnittenes Ende
 fn same(a: &str, b: &str) -> bool {
     a.trim_end().chars().zip(b.trim_end().chars()).all(|(x, y)| x == y || x == BROKEN || y == BROKEN)
+}
+
+/// Ohne lesbaren Text (leer oder nur gestörte Zeichen)
+pub fn blank(message: &str) -> bool {
+    message.chars().all(|c| c.is_whitespace() || c == BROKEN)
 }
 
 /// Mehr lesbare Zeichen sind besser (weniger gestört bzw. nicht abgeschnitten), bei Gleichstand
@@ -90,7 +97,10 @@ mod tests {
         // Besser: ersetzt den Text des gespeicherten
         let later = start + Duration::from_secs(19);
         match d.check(&pocsag("Funk", "1859991", "F2 Musterstr. 1"), later) {
-            Verdict::Better(t) => assert_eq!((t.id, t.message.as_str()), (7, "F2 Musterstr. 1")),
+            Verdict::Better { telegram, previous } => {
+                assert_eq!((telegram.id, telegram.message.as_str()), (7, "F2 Musterstr. 1"));
+                assert_eq!(previous, "F2 Muster��r. 1");
+            }
             v => panic!("{v:?}"),
         }
         // Danach zählt die bessere Fassung
@@ -107,6 +117,22 @@ mod tests {
         assert!(matches!(d.check(&pocsag("Funk", "1859991", "B3 Hauptstr. 4"), now), Verdict::New));
         assert!(matches!(d.check(&pocsag("SDR", "1859991", "F2 Musterstr. 1"), now), Verdict::New));
         assert!(matches!(d.check(&pocsag("Funk", "1859992", "F2 Musterstr. 1"), now), Verdict::New));
+    }
+
+    #[test]
+    fn text_after_blank_is_better_blank_after_text_is_dropped() {
+        let mut d = Dedupe::new(Duration::from_secs(20));
+        let now = Instant::now();
+        d.remember(&pocsag("Funk", "1859991", ""), now);
+        match d.check(&pocsag("Funk", "1859991", "B3 Brand Wohnhaus"), now) {
+            Verdict::Better { telegram, previous } => {
+                assert_eq!(telegram.message, "B3 Brand Wohnhaus");
+                assert!(blank(&previous));
+            }
+            v => panic!("{v:?}"),
+        }
+        assert!(matches!(d.check(&pocsag("Funk", "1859991", ""), now), Verdict::Drop));
+        assert!(blank(" ��") && !blank("B3"));
     }
 
     #[test]
