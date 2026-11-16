@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -255,6 +255,9 @@ pub struct Plugin {
     /// Offene Anfragen (process, notify) nach ID
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
+    /// Prozess lief schon und ist ausgefallen (Absturz, Neustart); Bearbeiten-Anfragen warten dann
+    /// nicht auf eine Antwort. Beim ersten Start bleibt es `false`: Anfragen warten im Kanal.
+    down: AtomicBool,
     state: Mutex<String>,
     log: Mutex<VecDeque<String>>,
 }
@@ -276,6 +279,7 @@ impl Plugins {
                 start: Mutex::new(Some((rx, settings))),
                 pending: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
+                down: AtomicBool::new(false),
                 state: Mutex::new("startet".into()),
                 log: Mutex::new(VecDeque::new()),
             }));
@@ -308,6 +312,11 @@ impl Plugins {
     /// Lässt die Bearbeiten-Plugins der Reihe nach über das Telegramm laufen; `None` = verwerfen.
     pub async fn process(&self, mut t: Telegram) -> Option<Telegram> {
         for p in self.with(Capability::Process) {
+            // Ein ausgefallenes Plugin (Absturz, Neustart) hält kein Telegramm auf; beim ersten Start wird gewartet
+            if p.down.load(Ordering::Relaxed) {
+                p.log(format!("Telegramm ohne Plugin weitergegeben (Plugin läuft nicht): {}", t.address));
+                continue;
+            }
             let reply = p.request(json!({ "type": "process", "telegram": t }), PROCESS_TIMEOUT).await;
             match reply.and_then(|r| apply_reply(&t, &r)) {
                 Ok(Some(changed)) => t = changed,
@@ -493,6 +502,7 @@ async fn supervise(plugin: Arc<Plugin>, settings: toml::Table, mut rx: mpsc::Unb
             let mut stdout = BufReader::new(child.stdout.take().context("stdout")?).lines();
             let mut stderr = BufReader::new(child.stderr.take().context("stderr")?).lines();
             plugin.set_state("läuft");
+            plugin.down.store(false, Ordering::Relaxed);
             plugin.log("gestartet".into());
             stdin.write_all(format!("{init}\n").as_bytes()).await?;
             let mut stderr_open = true;
@@ -520,6 +530,7 @@ async fn supervise(plugin: Arc<Plugin>, settings: toml::Table, mut rx: mpsc::Unb
             Ok(Some(child.wait().await?))
         }
         .await;
+        plugin.down.store(true, Ordering::Relaxed);
         plugin.pending.lock().unwrap().clear();
         let state = match result {
             Ok(None) => return,
@@ -691,6 +702,41 @@ mod tests {
     fn python_library_copy_is_current() {
         assert_eq!(include_str!("../plugins/webhook/boslook_plugin.py"), include_str!("../sdk/python/boslook_plugin.py"));
         assert_eq!(include_str!("../plugins/statistik/boslook_plugin.py"), include_str!("../sdk/python/boslook_plugin.py"));
+    }
+
+    fn dekoder(test: &str) -> (Plugins, PathBuf) {
+        let dir = plugin_dir(test, &[("dekoder", "name = \"dekoder\"\nversion = \"1\"\napi = 1\ncommand = [\"gibt-es-nicht\"]\ncapabilities = [\"process\"]\n")]);
+        (Plugins::new(&config("[plugin.dekoder]\n"), &dir).unwrap(), dir)
+    }
+
+    fn telegram() -> Telegram {
+        let d = crate::telegram::Decoded { kind: crate::telegram::Kind::Pocsag, address: "1234567".into(), sub: "a".into(), message: "Text".into() };
+        Telegram::new(d, "Test", chrono::Local::now())
+    }
+
+    /// Ist ein Bearbeiten-Plugin ausgefallen, geht das Telegramm sofort unverändert weiter und steht im Plugin-Log
+    #[tokio::test]
+    async fn process_skips_plugin_that_went_down() {
+        let (plugins, dir) = dekoder("ausgefallen");
+        let p = plugins.get("dekoder").unwrap();
+        p.down.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        let t = plugins.process(telegram()).await.unwrap();
+        assert_eq!(t.message, "Text");
+        assert!(started.elapsed() < PROCESS_TIMEOUT / 2, "{:?}", started.elapsed());
+        assert!(p.log.lock().unwrap().iter().any(|l| l.contains("ohne Plugin weitergegeben") && l.contains("1234567")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Beim ersten Start wird nicht übersprungen: die Anfrage wartet, ob das Plugin noch rechtzeitig antwortet
+    #[tokio::test]
+    async fn process_waits_for_plugin_on_first_start() {
+        let (plugins, dir) = dekoder("erster-start");
+        let started = std::time::Instant::now();
+        let t = plugins.process(telegram()).await.unwrap();
+        assert_eq!(t.message, "Text");
+        assert!(started.elapsed() >= PROCESS_TIMEOUT, "{:?}", started.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
